@@ -2,7 +2,16 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, Text, Uuid
+from sqlalchemy import (
+    DateTime,
+    Enum,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    Text,
+    Uuid,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TaskPriority, TaskStatus, TaskType, utc_now
@@ -20,6 +29,12 @@ class EngineeringTask(Base):
     __tablename__ = "engineering_tasks"
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["repository_id", "workspace_id"],
+            ["repositories.id", "repositories.workspace_id"],
+            name="fk_engineering_tasks_repository_workspace",
+            ondelete="SET NULL",
+        ),
         Index("ix_engineering_tasks_workspace_id", "workspace_id"),
         Index("ix_engineering_tasks_repository_id", "repository_id"),
         Index("ix_engineering_tasks_status", "status"),
@@ -38,7 +53,6 @@ class EngineeringTask(Base):
     )
     repository_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("repositories.id", ondelete="SET NULL"),
         nullable=True,
     )
     created_by: Mapped[uuid.UUID | None] = mapped_column(
@@ -103,6 +117,8 @@ class EngineeringTask(Base):
     repository: Mapped[Optional["Repository"]] = relationship(
         "Repository",
         back_populates="tasks",
+        foreign_keys=[repository_id, workspace_id],
+        overlaps="workspace,tasks",
     )
     creator: Mapped[Optional["User"]] = relationship(
         "User",

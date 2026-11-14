@@ -19,6 +19,7 @@ from app.db.models import (
     PullRequestRecord,
     Repository,
     RepositoryMember,
+    WorkspaceMembership,
 )
 
 # -----------------------------------------------------------------------------
@@ -195,12 +196,39 @@ async def deactivate_repository(
 
 async def add_repository_member(
     session: AsyncSession,
+    workspace_id: uuid.UUID,
     repository_id: uuid.UUID,
     user_id: uuid.UUID,
     role: RepositoryMemberRole = RepositoryMemberRole.DEVELOPER,
 ) -> RepositoryMember:
-    """Assign an access role to a workspace member for a specific repository."""
+    """
+    Assign an application role (ADMIN, DEVELOPER, VIEWER) to a workspace member for a repository.
+    Strictly validates that:
+    1. The repository belongs to the specified workspace.
+    2. The user has an active membership in the same workspace.
+    """
+    # Verify repository belongs to workspace
+    repo_stmt = select(Repository).where(
+        Repository.id == repository_id,
+        Repository.workspace_id == workspace_id,
+    )
+    repo = (await session.execute(repo_stmt)).scalar_one_or_none()
+    if not repo:
+        raise ValueError("Repository does not belong to the target workspace")
+
+    # Verify user belongs to workspace
+    ws_member_stmt = select(WorkspaceMembership).where(
+        WorkspaceMembership.workspace_id == workspace_id,
+        WorkspaceMembership.user_id == user_id,
+    )
+    ws_member = (await session.execute(ws_member_stmt)).scalar_one_or_none()
+    if not ws_member:
+        raise ValueError(
+            "User must be a member of the workspace before being assigned to a repository"
+        )
+
     member = RepositoryMember(
+        workspace_id=workspace_id,
         repository_id=repository_id,
         user_id=user_id,
         role=role,
@@ -403,3 +431,27 @@ async def create_audit_log(
     session.add(log)
     await session.flush()
     return log
+
+
+async def list_audit_logs(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[AuditLog], int]:
+    """
+    List audit log records strictly scoped to a workspace (read-only query).
+    Note: Audit logs are append-only. There are NO update or delete service functions.
+    """
+    count_stmt = select(func.count(AuditLog.id)).where(AuditLog.workspace_id == workspace_id)
+    total = (await session.execute(count_stmt)).scalar() or 0
+
+    stmt = (
+        select(AuditLog)
+        .where(AuditLog.workspace_id == workspace_id)
+        .order_by(AuditLog.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all()), total

@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.db.base import TaskPriority, TaskStatus, TaskType
+from app.db.base import RepositoryMemberRole, TaskPriority, TaskStatus, TaskType
 
 # -----------------------------------------------------------------------------
 # Common Schemas
@@ -88,6 +88,31 @@ class RepositoryListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+# -----------------------------------------------------------------------------
+# Repository Member Schemas
+# -----------------------------------------------------------------------------
+
+
+class RepositoryMemberCreate(BaseModel):
+    """Payload to assign a workspace user to a repository."""
+
+    user_id: uuid.UUID
+    role: RepositoryMemberRole = RepositoryMemberRole.DEVELOPER
+
+
+class RepositoryMemberResponse(BaseModel):
+    """Response payload for a repository member entity."""
+
+    id: uuid.UUID
+    workspace_id: uuid.UUID
+    repository_id: uuid.UUID
+    user_id: uuid.UUID
+    role: RepositoryMemberRole
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 # -----------------------------------------------------------------------------

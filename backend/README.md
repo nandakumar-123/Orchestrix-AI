@@ -17,12 +17,24 @@ The database architecture is built on **Neon Serverless PostgreSQL** using **SQL
 - **`PullRequestRecord`** (`pull_request_records`): Tracks GitHub pull requests synthesized by or linked to engineering tasks (`pr_number`, `source_branch`, `target_branch`, `state`, `html_url`).
 - **`AuditLog`** (`audit_logs`): Immutable audit records of administrative, security, and task operations with automatic credential sanitization.
 
-### Multi-Tenant Isolation Strategy
-- All repositories, installations, engineering tasks, pull requests, and audit logs are strictly foreign-keyed and scoped to `workspace_id`.
-- Tenant isolation is validated at both the database level (constraints and indexes) and the service layer:
-  - Repositories cannot be bound to an installation outside their workspace.
-  - Tasks cannot reference repositories outside their workspace.
-  - Queries strictly filter on `workspace_id` to prevent cross-tenant data leakage.
+### Multi-Tenant Isolation Strategy & Database Integrity
+- All repositories, installations, engineering tasks, pull requests, repository members, and audit logs are strictly scoped to `workspace_id`.
+- **Database-Level Composite Foreign Keys**:
+  - `repositories (installation_id, workspace_id)` -> `github_installations (id, workspace_id)`: Guarantees a repository cannot reference an installation from another workspace.
+  - `engineering_tasks (repository_id, workspace_id)` -> `repositories (id, workspace_id)`: Guarantees that if a task references a repository, the repository belongs to the same workspace (nullable when repository_id is NULL).
+  - `pull_request_records (repository_id, workspace_id)` -> `repositories (id, workspace_id)`: Guarantees a pull request belongs to the same workspace as its repository.
+  - `repository_members (repository_id, workspace_id)` -> `repositories (id, workspace_id)` AND `(user_id, workspace_id)` -> `workspace_memberships (user_id, workspace_id)`: Guarantees that only users who have verified membership in the repository's workspace can be assigned to that repository.
+- **Repository Member Roles**:
+  - `ADMIN`: Manage repository access and repository-level settings within the workspace.
+  - `DEVELOPER`: Work with engineering tasks and repository operations permitted by workspace policy.
+  - `VIEWER`: Read-only application access.
+  - *Note: These are Orchestrix AI application roles and not GitHub permission levels.*
+- **Audit Log Immutability**:
+  - Audit records are append-only. No service endpoints or CRUD functions expose update or delete operations on `audit_logs`.
+  - Secrets and credentials (tokens, private keys, passwords) are automatically redacted upon ingestion (`[REDACTED]`).
+- **Current Security Status and API Boundaries**:
+  - The API endpoints require `workspace_id` and validate cross-tenant entity consistency.
+  - *Security Limitation*: A supplied `workspace_id` is NOT authorization. Production authentication (e.g. Google OAuth) and session-based `WorkspaceMembership` permission checks are planned for upcoming phases.
 
 ---
 
@@ -44,7 +56,7 @@ uv run alembic revision --autogenerate -m "describe schema change"
 ### Run Automated Tests
 ```powershell
 cd backend
-# Run test suite including database unit tests, entity lifecycle, and health endpoints
+# Run test suite including database unit tests, tenant integrity, and health endpoints
 uv run pytest
 ```
 
@@ -58,6 +70,7 @@ uv run pytest
 - `POST /api/v1/repositories` — Register a new repository under an authorized installation.
 - `PATCH /api/v1/repositories/{repository_id}?workspace_id={uuid}` — Update repository metadata.
 - `DELETE /api/v1/repositories/{repository_id}?workspace_id={uuid}` — Soft-delete/deactivate a repository.
+- `POST /api/v1/repositories/{repository_id}/members?workspace_id={uuid}` — Assign a workspace member to a repository (`ADMIN`, `DEVELOPER`, `VIEWER`).
 
 ### Engineering Tasks
 - `GET /api/v1/tasks?workspace_id={uuid}&status={status}&repository_id={uuid}` — List workspace tasks.

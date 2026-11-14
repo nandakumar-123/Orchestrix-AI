@@ -148,3 +148,49 @@ async def test_engineering_task_api_crud_lifecycle(api_client: AsyncClient) -> N
     )
     assert patch_res.status_code == 200
     assert patch_res.json()["status"] == "RUNNING"
+
+
+@pytest.mark.asyncio
+async def test_repository_member_api_and_tenant_validation(api_client: AsyncClient) -> None:
+    """Test repository member assignment, role validation, and cross-workspace rejections."""
+    workspace_id = app.state.test_workspace_id
+    inst_id = app.state.test_installation_id
+
+    # Create repo
+    repo_payload = {
+        "workspace_id": str(workspace_id),
+        "installation_id": str(inst_id),
+        "github_repository_id": 999123,
+        "name": "member-test-repo",
+        "full_name": "api-test-ws/member-test-repo",
+        "owner_login": "api-test-ws",
+        "html_url": "https://github.com/api-test-ws/member-test-repo",
+    }
+    repo_res = await api_client.post("/api/v1/repositories", json=repo_payload)
+    assert repo_res.status_code == 201
+    repo_id = repo_res.json()["id"]
+
+    # Attempt to assign a user who is NOT a member of the workspace (fails with 400)
+    fake_user_id = str(uuid.uuid4())
+    member_res = await api_client.post(
+        f"/api/v1/repositories/{repo_id}/members?workspace_id={workspace_id}",
+        json={"user_id": fake_user_id, "role": "DEVELOPER"},
+    )
+    assert member_res.status_code == 400
+    assert "User must be a member of the workspace" in member_res.json()["detail"]
+
+    # Reject invalid role
+    invalid_role_res = await api_client.post(
+        f"/api/v1/repositories/{repo_id}/members?workspace_id={workspace_id}",
+        json={"user_id": fake_user_id, "role": "SUPERADMIN"},
+    )
+    assert invalid_role_res.status_code == 422  # Pydantic validation error
+
+    # Cross-workspace repository member assignment attempt (with another workspace_id in query)
+    other_ws_id = str(uuid.uuid4())
+    cross_member_res = await api_client.post(
+        f"/api/v1/repositories/{repo_id}/members?workspace_id={other_ws_id}",
+        json={"user_id": fake_user_id, "role": "DEVELOPER"},
+    )
+    assert cross_member_res.status_code == 400
+    assert "Repository does not belong to the target workspace" in cross_member_res.json()["detail"]

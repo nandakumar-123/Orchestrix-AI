@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     String,
     Text,
@@ -31,8 +32,15 @@ class Repository(Base):
     __tablename__ = "repositories"
 
     __table_args__ = (
+        UniqueConstraint("id", "workspace_id", name="uq_repositories_id_workspace"),
         UniqueConstraint(
             "workspace_id", "github_repository_id", name="uq_repositories_workspace_github_repo"
+        ),
+        ForeignKeyConstraint(
+            ["installation_id", "workspace_id"],
+            ["github_installations.id", "github_installations.workspace_id"],
+            name="fk_repositories_installation_workspace",
+            ondelete="CASCADE",
         ),
         Index("ix_repositories_workspace_id", "workspace_id"),
         Index("ix_repositories_github_repo_id", "github_repository_id"),
@@ -50,7 +58,6 @@ class Repository(Base):
     )
     installation_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("github_installations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -118,10 +125,13 @@ class Repository(Base):
     workspace: Mapped["Workspace"] = relationship(
         "Workspace",
         back_populates="repositories",
+        overlaps="repositories,workspace",
     )
     installation: Mapped["GitHubInstallation"] = relationship(
         "GitHubInstallation",
         back_populates="repositories",
+        foreign_keys=[installation_id, workspace_id],
+        overlaps="workspace,repositories",
     )
     members: Mapped[list["RepositoryMember"]] = relationship(
         "RepositoryMember",
@@ -132,11 +142,13 @@ class Repository(Base):
         "EngineeringTask",
         back_populates="repository",
         cascade="all, delete-orphan",
+        overlaps="workspace",
     )
     pull_requests: Mapped[list["PullRequestRecord"]] = relationship(
         "PullRequestRecord",
         back_populates="repository",
         cascade="all, delete-orphan",
+        overlaps="workspace",
     )
 
     def __repr__(self) -> str:

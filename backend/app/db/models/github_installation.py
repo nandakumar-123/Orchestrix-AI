@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String, Uuid
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, utc_now
@@ -16,6 +16,10 @@ class GitHubInstallation(Base):
     """GitHub App installation metadata bound to a workspace."""
 
     __tablename__ = "github_installations"
+
+    __table_args__ = (
+        UniqueConstraint("id", "workspace_id", name="uq_github_installations_id_workspace"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),

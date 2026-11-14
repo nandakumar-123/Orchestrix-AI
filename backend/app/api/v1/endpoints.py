@@ -13,6 +13,8 @@ from app.api.v1.schemas import (
     HealthResponse,
     RepositoryCreate,
     RepositoryListResponse,
+    RepositoryMemberCreate,
+    RepositoryMemberResponse,
     RepositoryResponse,
     RepositoryUpdate,
 )
@@ -20,6 +22,7 @@ from app.core.config import settings
 from app.db.base import TaskStatus
 from app.db.session import check_database_connection, get_db_session
 from app.services.database import (
+    add_repository_member,
     create_engineering_task,
     deactivate_repository,
     get_engineering_task_by_id,
@@ -205,6 +208,39 @@ async def delete_repository(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Repository not found in the specified workspace",
         )
+
+
+@router.post(
+    "/repositories/{repository_id}/members",
+    response_model=RepositoryMemberResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["repositories"],
+    summary="Assign a workspace member to a repository",
+)
+async def add_member_to_repository(
+    repository_id: uuid.UUID,
+    payload: RepositoryMemberCreate,
+    workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
+    db: AsyncSession = Depends(get_db_session),
+) -> RepositoryMemberResponse:
+    """
+    Assign a workspace user to a repository with an application role (ADMIN, DEVELOPER, VIEWER).
+    Validates tenant consistency (both repository and user must belong to workspace_id).
+    """
+    try:
+        member = await add_repository_member(
+            db,
+            workspace_id=workspace_id,
+            repository_id=repository_id,
+            user_id=payload.user_id,
+            role=payload.role,
+        )
+        return RepositoryMemberResponse.model_validate(member)
+    except ValueError as val_err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(val_err),
+        ) from val_err
 
 
 # -----------------------------------------------------------------------------

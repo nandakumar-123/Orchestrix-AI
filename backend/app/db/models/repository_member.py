@@ -2,7 +2,14 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, ForeignKey, UniqueConstraint, Uuid
+from sqlalchemy import (
+    DateTime,
+    Enum,
+    ForeignKey,
+    ForeignKeyConstraint,
+    UniqueConstraint,
+    Uuid,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, RepositoryMemberRole, utc_now
@@ -19,6 +26,18 @@ class RepositoryMember(Base):
 
     __table_args__ = (
         UniqueConstraint("repository_id", "user_id", name="uq_repository_members_repo_user"),
+        ForeignKeyConstraint(
+            ["repository_id", "workspace_id"],
+            ["repositories.id", "repositories.workspace_id"],
+            name="fk_repository_members_repository_workspace",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "workspace_id"],
+            ["workspace_memberships.user_id", "workspace_memberships.workspace_id"],
+            name="fk_repository_members_user_workspace",
+            ondelete="CASCADE",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -26,15 +45,19 @@ class RepositoryMember(Base):
         primary_key=True,
         default=uuid.uuid4,
     )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     repository_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("repositories.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -53,10 +76,14 @@ class RepositoryMember(Base):
     repository: Mapped["Repository"] = relationship(
         "Repository",
         back_populates="members",
+        foreign_keys=[repository_id, workspace_id],
+        overlaps="workspace",
     )
     user: Mapped["User"] = relationship(
         "User",
         back_populates="repository_memberships",
+        primaryjoin="RepositoryMember.user_id == User.id",
+        foreign_keys=[user_id],
     )
 
     def __repr__(self) -> str:

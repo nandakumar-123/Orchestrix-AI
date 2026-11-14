@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -30,6 +31,12 @@ class PullRequestRecord(Base):
 
     __table_args__ = (
         UniqueConstraint("repository_id", "pr_number", name="uq_pull_requests_repo_number"),
+        ForeignKeyConstraint(
+            ["repository_id", "workspace_id"],
+            ["repositories.id", "repositories.workspace_id"],
+            name="fk_pull_request_records_repository_workspace",
+            ondelete="CASCADE",
+        ),
         Index("ix_pull_request_records_workspace_id", "workspace_id"),
         Index("ix_pull_request_records_repository_id", "repository_id"),
         Index("ix_pull_request_records_github_pr_id", "github_pr_id"),
@@ -47,7 +54,6 @@ class PullRequestRecord(Base):
     )
     repository_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("repositories.id", ondelete="CASCADE"),
         nullable=False,
     )
     task_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -109,6 +115,8 @@ class PullRequestRecord(Base):
     repository: Mapped["Repository"] = relationship(
         "Repository",
         back_populates="pull_requests",
+        foreign_keys=[repository_id, workspace_id],
+        overlaps="workspace,pull_requests",
     )
     task: Mapped[Optional["EngineeringTask"]] = relationship(
         "EngineeringTask",

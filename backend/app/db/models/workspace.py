@@ -62,11 +62,13 @@ class Workspace(Base):
         "Repository",
         back_populates="workspace",
         cascade="all, delete-orphan",
+        overlaps="repositories,workspace",
     )
     engineering_tasks: Mapped[list["EngineeringTask"]] = relationship(
         "EngineeringTask",
         back_populates="workspace",
         cascade="all, delete-orphan",
+        overlaps="repository,tasks,workspace",
     )
     audit_logs: Mapped[list["AuditLog"]] = relationship(
         "AuditLog",

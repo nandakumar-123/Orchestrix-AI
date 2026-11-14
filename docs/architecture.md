@@ -68,6 +68,25 @@ Workspace (Multi-Tenant Root)
 
 ## Security & Tenant Isolation Rules
 
-1. **Workspace Boundary**: All queries accessing repositories, tasks, PRs, and audit logs must explicitly filter on `workspace_id`.
-2. **Foreign Key Integrity**: A repository's installation must belong to the same workspace; tasks cannot be bound to cross-workspace repositories.
-3. **Secret Isolation**: Secrets (`.env`, `*.pem`, `*.key`) are completely excluded from Git via `.gitignore`. Audit log details automatically redact sensitive keys.
+1. **Workspace Boundary**: All queries accessing repositories, tasks, PRs, repository members, and audit logs must explicitly filter on `workspace_id`.
+2. **Database-Level Composite Foreign Keys**:
+   - `repositories (installation_id, workspace_id)` -> `github_installations (id, workspace_id)`
+   - `engineering_tasks (repository_id, workspace_id)` -> `repositories (id, workspace_id)`
+   - `pull_request_records (repository_id, workspace_id)` -> `repositories (id, workspace_id)`
+   - `repository_members (repository_id, workspace_id)` -> `repositories (id, workspace_id)`
+   - `repository_members (user_id, workspace_id)` -> `workspace_memberships (user_id, workspace_id)`
+3. **Repository Member Application Roles**:
+   - `ADMIN`: Manage repository settings and member access within workspace boundaries.
+   - `DEVELOPER`: Work with tasks and engineering operations.
+   - `VIEWER`: Read-only application access.
+   - *These are Orchestrix AI application roles and not GitHub permission levels.*
+4. **Audit Log Immutability**:
+   - Audit records are append-only.
+   - Credentials, API tokens, passwords, and secrets are automatically redacted (`[REDACTED]`).
+5. **Current Security Boundaries & Future Work**:
+   - Implemented: Database-level composite foreign-key enforcement, service-level tenant scoping, parameter validation, secret redaction, and error masking.
+   - Planned (Future Phases): Google OAuth 2.0 user authentication, session-based `WorkspaceMembership` authorization dependency, and GitHub App JWT/installation token issuance.
+
+## Secret Isolation
+
+Secrets (`.env`, `*.pem`, `*.key`) are strictly excluded from Git via `.gitignore`. Audit log details automatically redact sensitive keys.

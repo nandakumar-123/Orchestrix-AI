@@ -64,6 +64,8 @@ class User(Base):
     repository_memberships: Mapped[list["RepositoryMember"]] = relationship(
         "RepositoryMember",
         back_populates="user",
+        primaryjoin="User.id == RepositoryMember.user_id",
+        foreign_keys="RepositoryMember.user_id",
         cascade="all, delete-orphan",
     )
     created_tasks: Mapped[list["EngineeringTask"]] = relationship(

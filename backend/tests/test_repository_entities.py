@@ -1,6 +1,7 @@
 from collections.abc import AsyncGenerator
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -11,18 +12,23 @@ from app.db.base import (
     TaskPriority,
     TaskStatus,
     TaskType,
+    WorkspaceRole,
 )
 from app.db.models import (
+    EngineeringTask,
     PullRequestRecord,
     Repository,
     RepositoryMember,
     User,
     Workspace,
+    WorkspaceMembership,
 )
 from app.services.database import (
+    add_repository_member,
     create_audit_log,
     create_engineering_task,
     create_github_installation,
+    list_audit_logs,
     register_pull_request,
     register_repository,
     update_task_status,
@@ -31,13 +37,15 @@ from app.services.database import (
 
 @pytest.fixture
 async def session() -> AsyncGenerator[AsyncSession, None]:
-    """Isolated SQLite in-memory async database session."""
+    """Isolated SQLite in-memory async database session with PRAGMA foreign_keys=ON."""
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with engine.begin() as conn:
+        await conn.execute(text("PRAGMA foreign_keys = ON;"))
         await conn.run_sync(Base.metadata.create_all)
 
     session_factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as sess:
+        await sess.execute(text("PRAGMA foreign_keys = ON;"))
         yield sess
 
     await engine.dispose()
@@ -137,6 +145,11 @@ async def test_repository_membership_and_uniqueness(session: AsyncSession) -> No
     session.add_all([ws, user])
     await session.commit()
 
+    # User must be a member of the workspace first
+    wm = WorkspaceMembership(user_id=user.id, workspace_id=ws.id, role=WorkspaceRole.MEMBER)
+    session.add(wm)
+    await session.commit()
+
     inst = await create_github_installation(
         session=session,
         workspace_id=ws.id,
@@ -158,13 +171,21 @@ async def test_repository_membership_and_uniqueness(session: AsyncSession) -> No
     await session.commit()
 
     m1 = RepositoryMember(
-        repository_id=repo.id, user_id=user.id, role=RepositoryMemberRole.DEVELOPER
+        workspace_id=ws.id,
+        repository_id=repo.id,
+        user_id=user.id,
+        role=RepositoryMemberRole.DEVELOPER,
     )
     session.add(m1)
     await session.commit()
 
     # Duplicate should fail
-    m2 = RepositoryMember(repository_id=repo.id, user_id=user.id, role=RepositoryMemberRole.ADMIN)
+    m2 = RepositoryMember(
+        workspace_id=ws.id,
+        repository_id=repo.id,
+        user_id=user.id,
+        role=RepositoryMemberRole.ADMIN,
+    )
     session.add(m2)
     with pytest.raises(IntegrityError):
         await session.commit()
@@ -320,3 +341,152 @@ async def test_audit_log_creation_and_credential_sanitization(session: AsyncSess
     assert audit.details["safe_metadata"] == "enabled"
     assert audit.details["api_key"] == "[REDACTED]"
     assert audit.details["app_secret"] == "[REDACTED]"
+
+
+@pytest.mark.asyncio
+async def test_tenant_isolation_composite_foreign_keys_database_level(
+    session: AsyncSession,
+) -> None:
+    """Verify that PostgreSQL/SQLite composite foreign keys reject cross-workspace records directly."""
+    ws1 = Workspace(name="Workspace One", slug="ws-1")
+    ws2 = Workspace(name="Workspace Two", slug="ws-2")
+    user = User(email="cross@test.com")
+    session.add_all([ws1, ws2, user])
+    await session.flush()
+
+    # User is member of ws1 only
+    wm = WorkspaceMembership(user_id=user.id, workspace_id=ws1.id, role=WorkspaceRole.MEMBER)
+    session.add(wm)
+
+    # Installation in ws1
+    inst1 = await create_github_installation(
+        session=session,
+        workspace_id=ws1.id,
+        installation_id=9090,
+        account_login="ws-1",
+        account_type="User",
+        account_id=9090,
+    )
+    # Repo in ws1
+    repo1 = await register_repository(
+        session=session,
+        workspace_id=ws1.id,
+        installation_id=inst1.id,
+        github_repository_id=10101,
+        name="ws1-repo",
+        full_name="ws-1/ws1-repo",
+        owner_login="ws-1",
+        html_url="https://github.com/ws-1/ws1-repo",
+    )
+    await session.flush()
+
+    # Negative 1: Repository referencing Installation from another workspace
+    with pytest.raises(IntegrityError):
+        async with session.begin_nested():
+            bad_repo = Repository(
+                workspace_id=ws2.id,
+                installation_id=inst1.id,
+                github_repository_id=20202,
+                name="cross-repo",
+                full_name="ws-2/cross-repo",
+                owner_login="ws-2",
+                html_url="https://github.com/ws-2/cross-repo",
+            )
+            session.add(bad_repo)
+            await session.flush()
+
+    # Negative 2: EngineeringTask in ws2 referencing repo1 from ws1
+    with pytest.raises(IntegrityError):
+        async with session.begin_nested():
+            bad_task = EngineeringTask(
+                workspace_id=ws2.id,
+                repository_id=repo1.id,
+                title="Cross-workspace task",
+            )
+            session.add(bad_task)
+            await session.flush()
+
+    # Negative 3: PullRequestRecord in ws2 referencing repo1 from ws1
+    with pytest.raises(IntegrityError):
+        async with session.begin_nested():
+            bad_pr = PullRequestRecord(
+                workspace_id=ws2.id,
+                repository_id=repo1.id,
+                github_pr_id=55555,
+                pr_number=1,
+                title="Cross PR",
+                html_url="https://github.com/ws-1/ws1-repo/pull/1",
+                source_branch="feat",
+                target_branch="main",
+                state=PullRequestState.OPEN,
+            )
+            session.add(bad_pr)
+            await session.flush()
+
+    # Negative 4: RepositoryMember in ws2 for user (user not in ws2)
+    with pytest.raises(IntegrityError):
+        async with session.begin_nested():
+            bad_rm = RepositoryMember(
+                workspace_id=ws2.id,
+                repository_id=repo1.id,
+                user_id=user.id,
+                role=RepositoryMemberRole.DEVELOPER,
+            )
+            session.add(bad_rm)
+            await session.flush()
+
+    # Positive 5: Valid repository member via service
+    rm = await add_repository_member(
+        session=session,
+        workspace_id=ws1.id,
+        repository_id=repo1.id,
+        user_id=user.id,
+        role=RepositoryMemberRole.DEVELOPER,
+    )
+    await session.flush()
+    assert rm.id is not None
+    assert rm.role == RepositoryMemberRole.DEVELOPER
+
+    # Negative 6: Service rejects user without workspace membership
+    user2 = User(email="outsider@test.com")
+    session.add(user2)
+    await session.flush()
+    with pytest.raises(ValueError, match="User must be a member of the workspace"):
+        await add_repository_member(
+            session=session,
+            workspace_id=ws1.id,
+            repository_id=repo1.id,
+            user_id=user2.id,
+            role=RepositoryMemberRole.VIEWER,
+        )
+
+
+@pytest.mark.asyncio
+async def test_audit_log_append_only_and_querying(session: AsyncSession) -> None:
+    """Test creating and querying audit logs without update/delete."""
+    ws = Workspace(name="Audit Test", slug="audit-test")
+    session.add(ws)
+    await session.commit()
+
+    await create_audit_log(
+        session=session,
+        workspace_id=ws.id,
+        action="REPO_ADDED",
+        resource_type="repository",
+        resource_id="123",
+        details={"name": "test-repo", "token": "secret_abc"},
+    )
+    await create_audit_log(
+        session=session,
+        workspace_id=ws.id,
+        action="MEMBER_ADDED",
+        resource_type="repository_member",
+        resource_id="456",
+        details={"role": "DEVELOPER"},
+    )
+    await session.commit()
+
+    logs, total = await list_audit_logs(session, ws.id)
+    assert total == 2
+    assert len(logs) == 2
+    assert logs[0].details["token"] == "[REDACTED]" if logs[0].action == "REPO_ADDED" else True
