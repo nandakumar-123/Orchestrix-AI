@@ -37,7 +37,8 @@ class RetrievedChunkResult:
     vector_score: float
     lexical_score: float
     symbol_score: float
-    metadata: dict[str, Any]
+    graph_score: float = 0.0
+    metadata: dict[str, Any] = None  # type: ignore
 
 
 def _cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
@@ -268,3 +269,131 @@ class SemanticRetrievalEngine:
         # 6. Sort by combined similarity score descending and return top K
         scored_results.sort(key=lambda r: r.similarity_score, reverse=True)
         return scored_results[:limit]
+
+    async def search_with_graph(
+        self,
+        db: AsyncSession,
+        workspace_id: uuid.UUID,
+        repository_id: uuid.UUID,
+        query: str,
+        graph_provider: Any | None = None,
+        snapshot_id: uuid.UUID | None = None,
+        language: str | None = None,
+        symbol_type: str | None = None,
+        file_path_prefix: str | None = None,
+        limit: int = 15,
+        graph_weight: float = 0.20,
+    ) -> list[RetrievedChunkResult]:
+        """
+        Hybrid retrieval combining semantic vector similarity, lexical keyword matching,
+        symbol structure, and knowledge graph relationship topology.
+        """
+        from app.services.graph_service import MockGraphProvider, get_graph_provider
+
+        provider = graph_provider or get_graph_provider()
+
+        # Step 1: Base hybrid retrieval
+        results = await self.search(
+            db=db,
+            workspace_id=workspace_id,
+            repository_id=repository_id,
+            query=query,
+            snapshot_id=snapshot_id,
+            language=language,
+            symbol_type=symbol_type,
+            file_path_prefix=file_path_prefix,
+            limit=limit * 2,
+        )
+
+        if not results:
+            return []
+
+        # Step 2: Enrich with graph relationships & topology centrality
+        target_sid = str(results[0].snapshot_id)
+        enriched: list[RetrievedChunkResult] = []
+
+        for item in results:
+            g_score = 0.0
+            graph_meta: dict[str, Any] = {
+                "incoming_calls": [],
+                "outgoing_calls": [],
+                "implements": [],
+                "endpoints": [],
+                "tests": [],
+            }
+
+            if item.symbol_name and item.symbol_type:
+                sym_id = f"sym:{target_sid}:{item.file_path}:{item.symbol_type}:{item.symbol_name}"
+
+                if isinstance(provider, MockGraphProvider):
+                    # Direct mock inspection
+                    for rel in provider.in_edges.get(sym_id, []):
+                        src_node = provider.nodes.get(rel.source_id)
+                        name = (
+                            src_node.properties.get("name", rel.source_id)
+                            if src_node
+                            else rel.source_id
+                        )
+                        if rel.type == "CALLS":
+                            graph_meta["incoming_calls"].append(name)
+                        elif rel.type == "TESTS":
+                            graph_meta["tests"].append(name)
+                        elif rel.type in ("IMPLEMENTS", "EXTENDS"):
+                            graph_meta["implements"].append(name)
+
+                    for rel in provider.out_edges.get(sym_id, []):
+                        tgt_node = provider.nodes.get(rel.target_id)
+                        name = (
+                            tgt_node.properties.get("name", rel.target_id)
+                            if tgt_node
+                            else rel.target_id
+                        )
+                        if rel.type == "CALLS":
+                            graph_meta["outgoing_calls"].append(name)
+                        elif rel.type == "EXPOSES":
+                            graph_meta["endpoints"].append(name)
+                else:
+                    # Neo4j inspection
+                    try:
+                        cypher = """
+                        MATCH (s:CodeEntity {id: $sym_id})-[r:RELATED]-(other:CodeEntity)
+                        RETURN r.type as rel_type, startNode(r).id = $sym_id as is_out, other.name as other_name
+                        LIMIT 20
+                        """
+                        records = await provider.execute_query(cypher, {"sym_id": sym_id})
+                        for rec in records:
+                            r_type = rec.get("rel_type")
+                            is_out = rec.get("is_out")
+                            oname = rec.get("other_name", "")
+                            if r_type == "CALLS":
+                                if is_out:
+                                    graph_meta["outgoing_calls"].append(oname)
+                                else:
+                                    graph_meta["incoming_calls"].append(oname)
+                            elif r_type == "TESTS":
+                                graph_meta["tests"].append(oname)
+                            elif r_type == "EXPOSES":
+                                graph_meta["endpoints"].append(oname)
+                    except Exception as e:
+                        logger.warning(f"Error querying graph for symbol {sym_id}: {e}")
+
+                # Calculate graph centrality / density score
+                conn_count = (
+                    len(graph_meta["incoming_calls"])
+                    + len(graph_meta["outgoing_calls"])
+                    + len(graph_meta["implements"])
+                    + len(graph_meta["endpoints"])
+                    + len(graph_meta["tests"])
+                )
+                g_score = min(1.0, conn_count * 0.15)
+
+            # Re-blend similarity score
+            blended = ((1.0 - graph_weight) * item.similarity_score) + (graph_weight * g_score)
+            item.similarity_score = round(min(1.0, max(0.0, blended)), 4)
+            item.graph_score = round(g_score, 4)
+            item.metadata = dict(item.metadata or {})
+            item.metadata["graph"] = graph_meta
+            enriched.append(item)
+
+        enriched.sort(key=lambda r: r.similarity_score, reverse=True)
+        return enriched[:limit]

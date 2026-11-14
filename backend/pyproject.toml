@@ -59,6 +59,7 @@ dependencies = [
     "tree-sitter-pascal>=0.11.0",
     "pgvector>=0.5.1",
     "fastembed>=0.9.1",
+    "neo4j>=6.4.1",
 ]
 
 [project.optional-dependencies]

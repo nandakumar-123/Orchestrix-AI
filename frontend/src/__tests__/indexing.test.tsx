@@ -78,6 +78,52 @@ describe("Repository Intelligence & Indexing Integration", () => {
     vi.spyOn(githubModule, "fetchWorkspaceRepositories").mockResolvedValue([mockRepo]);
     vi.spyOn(indexingModule, "fetchRepositoryIntelligence").mockResolvedValue(mockIntelligence);
     vi.spyOn(indexingModule, "fetchSemanticIndexStatus").mockResolvedValue(null);
+    vi.spyOn(indexingModule, "fetchGraphIndexStatus").mockResolvedValue({
+      status: "completed",
+      snapshot_id: "snap-1",
+      provider: "mock",
+      total_nodes: 10,
+      total_relationships: 12,
+      indexed_at: "2026-03-01T13:00:00Z",
+    });
+    vi.spyOn(indexingModule, "fetchRepositoryGraph").mockResolvedValue({
+      nodes: [
+        {
+          id: "sym:snap-1:app/auth.py:function:login",
+          label: "Function",
+          properties: { name: "login", file_path: "app/auth.py", start_line: 10, end_line: 25 },
+        },
+        {
+          id: "api:snap-1:POST:/auth/login",
+          label: "APIEndpoint",
+          properties: { method: "POST", path: "/auth/login", file_path: "app/auth.py" },
+        },
+      ],
+      edges: [
+        {
+          source_id: "sym:snap-1:app/auth.py:function:login",
+          target_id: "api:snap-1:POST:/auth/login",
+          type: "EXPOSES",
+          properties: {},
+        },
+      ],
+      total_nodes: 2,
+      total_edges: 1,
+    });
+    vi.spyOn(indexingModule, "fetchImpactPreview").mockResolvedValue({
+      target_id: "sym:snap-1:app/auth.py:function:login",
+      target_name: "login",
+      target_type: "Function",
+      risk_level: "HIGH",
+      risk_score: 55.0,
+      reasons: ["Exposes 1 public API endpoint", "1 direct caller affected"],
+      direct_dependents: [],
+      indirect_dependents: [],
+      affected_endpoints: [{ id: "api:1", name: "/auth/login", label: "APIEndpoint", file_path: "app/auth.py", relationship: "EXPOSES", depth: 1 }],
+      affected_tests: [],
+      affected_database_models: [],
+      subgraph: { nodes: [], edges: [], total_nodes: 0, total_edges: 0 },
+    });
     vi.spyOn(indexingModule, "fetchRepositoryFiles").mockResolvedValue({
       files: [],
       total: 0,
@@ -351,6 +397,51 @@ describe("Repository Intelligence & Indexing Integration", () => {
       expect(screen.getByText("backend/app/api/v1/auth.py")).toBeInTheDocument();
       expect(screen.getByText("94% Match")).toBeInTheDocument();
       expect(screen.getByText(/async def google_oauth_callback/i)).toBeInTheDocument();
+    });
+  });
+
+  it("should display Knowledge Graph tab, render nodes, and preview blast radius impact", async () => {
+    const user = userEvent.setup();
+    render(<RepositoriesPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("orchestrix-core")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Explore Intelligence/i })).toBeInTheDocument();
+    });
+
+    // Open Intelligence modal
+    const viewButton = screen.getByRole("button", { name: /Explore Intelligence/i });
+    await user.click(viewButton);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("repository-intelligence-modal")).toBeInTheDocument();
+    });
+
+    // Switch to Knowledge Graph tab
+    const graphTab = screen.getByTestId("tab-knowledge-graph");
+    await user.click(graphTab);
+
+    // Verify Graph Header and nodes
+    await waitFor(() => {
+      expect(screen.getByText(/Code Knowledge Graph & Relationship Engine/i)).toBeInTheDocument();
+      expect(screen.getByText("login")).toBeInTheDocument();
+    });
+
+    // Click on node 'login' to select it
+    await user.click(screen.getByText("login"));
+
+    // Verify Inspector opened and click Blast Radius Preview
+    await waitFor(() => {
+      expect(screen.getByTestId("analyze-impact-button")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId("analyze-impact-button"));
+
+    // Verify Impact Preview results displayed
+    await waitFor(() => {
+      expect(screen.getByText(/Impact Analysis & Risk/i)).toBeInTheDocument();
+      expect(screen.getByText(/HIGH \(55\/100\)/i)).toBeInTheDocument();
+      expect(screen.getByText(/Exposes 1 public API endpoint/i)).toBeInTheDocument();
     });
   });
 });

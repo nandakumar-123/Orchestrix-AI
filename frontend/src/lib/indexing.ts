@@ -442,3 +442,285 @@ export async function fetchRepositoryDependencies(
     return null;
   }
 }
+
+// ----------------------------------------------------------------------------
+// Knowledge Graph & Code Relationship Intelligence Client
+// ----------------------------------------------------------------------------
+
+export interface GraphNodeProperties {
+  name?: string;
+  table_name?: string;
+  path?: string;
+  file_path?: string;
+  start_line?: number;
+  end_line?: number;
+  signature?: string;
+  method?: string;
+  [key: string]: string | number | boolean | null | undefined;
+}
+
+export interface GraphNode {
+  id: string;
+  label: string;
+  properties: GraphNodeProperties;
+}
+
+export interface GraphEdgeProperties {
+  status?: string;
+  confidence?: number;
+  [key: string]: string | number | boolean | null | undefined;
+}
+
+export interface GraphEdge {
+  source_id: string;
+  target_id: string;
+  type: string;
+  properties: GraphEdgeProperties;
+}
+
+export interface SubgraphResponse {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  total_nodes: number;
+  total_edges: number;
+}
+
+export interface GraphIndexStatusResponse {
+  status: string;
+  snapshot_id: string;
+  provider: string;
+  total_nodes: number;
+  total_relationships: number;
+  indexed_at?: string | null;
+}
+
+export interface ImpactPreviewResponse {
+  target_id: string;
+  target_name: string;
+  target_type: string;
+  risk_level: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  risk_score: number;
+  reasons: string[];
+  direct_dependents: Array<{
+    id: string;
+    name: string;
+    label: string;
+    file_path: string;
+    relationship: string;
+    depth: number;
+  }>;
+  indirect_dependents: Array<{
+    id: string;
+    name: string;
+    label: string;
+    file_path: string;
+    relationship: string;
+    depth: number;
+  }>;
+  affected_endpoints: Array<{
+    id: string;
+    name: string;
+    label: string;
+    file_path: string;
+    relationship: string;
+    depth: number;
+  }>;
+  affected_tests: Array<{
+    id: string;
+    name: string;
+    label: string;
+    file_path: string;
+    relationship: string;
+    depth: number;
+  }>;
+  affected_database_models: Array<{
+    id: string;
+    name: string;
+    label: string;
+    file_path: string;
+    relationship: string;
+    depth: number;
+  }>;
+  subgraph: SubgraphResponse;
+}
+
+/**
+ * Fetch knowledge graph subgraph for visualization.
+ */
+export async function fetchRepositoryGraph(
+  repositoryId: string,
+  workspaceId: string,
+  options?: {
+    snapshot_id?: string;
+    file_path?: string;
+    labels?: string[];
+    limit?: number;
+  },
+): Promise<SubgraphResponse | null> {
+  try {
+    const params = new URLSearchParams({ workspace_id: workspaceId });
+    if (options?.snapshot_id) params.append("snapshot_id", options.snapshot_id);
+    if (options?.file_path) params.append("file_path", options.file_path);
+    if (options?.labels) {
+      options.labels.forEach((l) => params.append("labels", l));
+    }
+    if (options?.limit) params.append("limit", options.limit.toString());
+
+    const res = await fetchWithAuth(
+      `/api/v1/repositories/${repositoryId}/graph?${params.toString()}`,
+    );
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch knowledge graph indexing status.
+ */
+export async function fetchGraphIndexStatus(
+  repositoryId: string,
+  workspaceId: string,
+  snapshotId?: string,
+): Promise<GraphIndexStatusResponse | null> {
+  try {
+    const params = new URLSearchParams({ workspace_id: workspaceId });
+    if (snapshotId) params.append("snapshot_id", snapshotId);
+
+    const res = await fetchWithAuth(
+      `/api/v1/repositories/${repositoryId}/graph-index/status?${params.toString()}`,
+    );
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Trigger knowledge graph extraction and ingestion.
+ */
+export async function triggerGraphIndexing(
+  repositoryId: string,
+  workspaceId: string,
+  snapshotId: string,
+  forceReindex: boolean = false,
+): Promise<GraphIndexStatusResponse | null> {
+  try {
+    const params = new URLSearchParams({ workspace_id: workspaceId });
+    const res = await fetchWithAuth(
+      `/api/v1/repositories/${repositoryId}/graph-index?${params.toString()}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          snapshot_id: snapshotId,
+          force_reindex: forceReindex,
+        }),
+      },
+    );
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Compute code change blast radius and impact preview.
+ */
+export async function fetchImpactPreview(
+  repositoryId: string,
+  workspaceId: string,
+  params: {
+    snapshot_id?: string;
+    file_path?: string;
+    symbol_name?: string;
+    symbol_id?: string;
+    max_depth?: number;
+  },
+): Promise<ImpactPreviewResponse | null> {
+  try {
+    const qparams = new URLSearchParams({ workspace_id: workspaceId });
+    const res = await fetchWithAuth(
+      `/api/v1/repositories/${repositoryId}/impact-preview?${qparams.toString()}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      },
+    );
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Execute targeted structural knowledge graph query.
+ */
+export async function queryRepositoryGraph(
+  repositoryId: string,
+  workspaceId: string,
+  payload: {
+    query_type: string;
+    snapshot_id?: string;
+    target_id?: string;
+    source_id?: string;
+    file_path?: string;
+    direction?: string;
+    max_depth?: number;
+  },
+): Promise<Record<string, unknown> | null> {
+  try {
+    const params = new URLSearchParams({ workspace_id: workspaceId });
+    const res = await fetchWithAuth(
+      `/api/v1/repositories/${repositoryId}/graph/query?${params.toString()}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+    );
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Hybrid semantic and knowledge graph search.
+ */
+export async function intelligenceSearch(
+  repositoryId: string,
+  workspaceId: string,
+  payload: {
+    query: string;
+    snapshot_id?: string;
+    language?: string;
+    symbol_type?: string;
+    file_path_prefix?: string;
+    limit?: number;
+    include_graph_enrichment?: boolean;
+  },
+): Promise<Record<string, unknown> | null> {
+  try {
+    const params = new URLSearchParams({ workspace_id: workspaceId });
+    const res = await fetchWithAuth(
+      `/api/v1/repositories/${repositoryId}/intelligence/search?${params.toString()}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+    );
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+

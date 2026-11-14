@@ -570,3 +570,114 @@ class AssembledContextResponse(BaseModel):
     estimated_tokens: int
     formatted_context_markdown: str
     blocks: list[AssembledCodeBlockResponse]
+
+
+# -----------------------------------------------------------------------------
+# Knowledge Graph & Code Relationship Schemas
+# -----------------------------------------------------------------------------
+
+
+class GraphNodeResponse(BaseModel):
+    """Representation of a node in the code knowledge graph."""
+
+    id: str
+    label: str
+    properties: dict[str, Any] = Field(default_factory=dict)
+
+
+class GraphEdgeResponse(BaseModel):
+    """Representation of an edge/relationship in the code knowledge graph."""
+
+    source_id: str
+    target_id: str
+    type: str
+    properties: dict[str, Any] = Field(default_factory=dict)
+
+
+class SubgraphResponse(BaseModel):
+    """Subgraph containing matched nodes and interconnecting edges."""
+
+    nodes: list[GraphNodeResponse]
+    edges: list[GraphEdgeResponse]
+    total_nodes: int
+    total_edges: int
+
+
+class GraphIndexTriggerRequest(BaseModel):
+    """Request to initiate or re-run knowledge graph extraction."""
+
+    snapshot_id: uuid.UUID
+    force_reindex: bool = False
+
+
+class GraphIndexStatusResponse(BaseModel):
+    """Status of knowledge graph indexing for a repository snapshot."""
+
+    status: str
+    snapshot_id: uuid.UUID
+    provider: str
+    total_nodes: int
+    total_relationships: int
+    indexed_at: str | None = None
+
+
+class GraphQueryRequest(BaseModel):
+    """Request for targeted structural graph queries."""
+
+    query_type: str = Field(
+        ...,
+        description="Type of graph query: callers, implementations, importing_files, dependencies, circular_dependencies, or path",
+    )
+    snapshot_id: uuid.UUID | None = None
+    target_id: str | None = None
+    source_id: str | None = None
+    file_path: str | None = None
+    direction: str = "outgoing"
+    max_depth: int = Field(default=3, ge=1, le=5)
+
+
+class GraphQueryResponse(BaseModel):
+    """Results of a structural graph query."""
+
+    query_type: str
+    count: int
+    results: Any
+
+
+class ImpactPreviewRequest(BaseModel):
+    """Request to evaluate the blast radius of a file or symbol change."""
+
+    snapshot_id: uuid.UUID | None = None
+    file_path: str | None = None
+    symbol_name: str | None = None
+    symbol_id: str | None = None
+    max_depth: int = Field(default=3, ge=1, le=5)
+
+
+class ImpactPreviewResponse(BaseModel):
+    """Detailed blast radius and risk analysis for proposed code modifications."""
+
+    target_id: str
+    target_name: str
+    target_type: str
+    risk_level: str
+    risk_score: float
+    reasons: list[str]
+    direct_dependents: list[dict[str, Any]]
+    indirect_dependents: list[dict[str, Any]]
+    affected_endpoints: list[dict[str, Any]]
+    affected_tests: list[dict[str, Any]]
+    affected_database_models: list[dict[str, Any]]
+    subgraph: SubgraphResponse
+
+
+class IntelligenceSearchRequest(BaseModel):
+    """Request for unified hybrid semantic + knowledge graph code search."""
+
+    query: str = Field(..., min_length=2, max_length=1000)
+    snapshot_id: uuid.UUID | None = None
+    language: str | None = None
+    symbol_type: str | None = None
+    file_path_prefix: str | None = None
+    limit: int = Field(default=15, ge=1, le=50)
+    include_graph_enrichment: bool = True

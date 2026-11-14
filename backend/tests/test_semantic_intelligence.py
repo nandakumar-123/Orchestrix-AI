@@ -524,7 +524,10 @@ async def test_semantic_api_endpoints(
 ) -> None:
     db, session_factory, user, ws, repo, snap = semantic_test_setup
 
-    app.dependency_overrides[get_db_session] = lambda: session_factory()
+    async def override_get_db_session() -> AsyncGenerator[AsyncSession, None]:
+        yield db
+
+    app.dependency_overrides[get_db_session] = override_get_db_session
 
     csrf_token = generate_csrf_token()
     cookies = {

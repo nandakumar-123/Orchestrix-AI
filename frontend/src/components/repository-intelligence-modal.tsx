@@ -4,17 +4,25 @@ import * as React from "react";
 import {
   CodeSymbolItem,
   FileDependencyItem,
+  GraphIndexStatusResponse,
+  GraphNode,
+  ImpactPreviewResponse,
   RepositoryFileItem,
   RepositoryIntelligenceOverview,
   SemanticIndexStatusResponse,
   SemanticSearchResultItem,
+  SubgraphResponse,
   SupportedLanguagesResponse,
   executeSemanticSearch,
+  fetchGraphIndexStatus,
+  fetchImpactPreview,
   fetchRepositoryDependencies,
   fetchRepositoryFiles,
+  fetchRepositoryGraph,
   fetchRepositorySymbols,
   fetchSemanticIndexStatus,
   fetchSupportedLanguages,
+  triggerGraphIndexing,
 } from "@/lib/indexing";
 import {
   X,
@@ -29,6 +37,9 @@ import {
   Clock,
   Globe2,
   BrainCircuit,
+  Network,
+  AlertTriangle,
+  RefreshCw,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -56,7 +67,7 @@ export function RepositoryIntelligenceModal({
   isIndexing,
 }: RepositoryIntelligenceModalProps) {
   const [activeTab, setActiveTab] = React.useState<
-    "overview" | "semantic" | "files" | "symbols" | "dependencies" | "languages"
+    "overview" | "semantic" | "graph" | "files" | "symbols" | "dependencies" | "languages"
   >("overview");
   const [supportedLangs, setSupportedLangs] = React.useState<SupportedLanguagesResponse | null>(null);
 
@@ -64,6 +75,16 @@ export function RepositoryIntelligenceModal({
   const [files, setFiles] = React.useState<RepositoryFileItem[]>([]);
   const [symbols, setSymbols] = React.useState<CodeSymbolItem[]>([]);
   const [dependencies, setDependencies] = React.useState<FileDependencyItem[]>([]);
+
+  // Knowledge Graph States
+  const [graphSubgraph, setGraphSubgraph] = React.useState<SubgraphResponse | null>(null);
+  const [graphStatus, setGraphStatus] = React.useState<GraphIndexStatusResponse | null>(null);
+  const [selectedGraphNode, setSelectedGraphNode] = React.useState<GraphNode | null>(null);
+  const [impactPreview, setImpactPreview] = React.useState<ImpactPreviewResponse | null>(null);
+  const [isIndexingGraph, setIsIndexingGraph] = React.useState(false);
+  const [isLoadingImpact, setIsLoadingImpact] = React.useState(false);
+  const [graphSearch, setGraphSearch] = React.useState("");
+  const [graphTypeFilter, setGraphTypeFilter] = React.useState<string>("all");
 
   // Semantic Search States
   const [semanticQuery, setSemanticQuery] = React.useState("");
@@ -89,6 +110,16 @@ export function RepositoryIntelligenceModal({
       if (activeTab === "semantic") {
         const res = await fetchSemanticIndexStatus(repositoryId, workspaceId);
         if (isMounted && res) setSemanticStatus(res);
+      } else if (activeTab === "graph") {
+        const snapId = overview?.latest_snapshot?.id;
+        const [gStatus, gSub] = await Promise.all([
+          fetchGraphIndexStatus(repositoryId, workspaceId, snapId),
+          fetchRepositoryGraph(repositoryId, workspaceId, { snapshot_id: snapId, limit: 150 }),
+        ]);
+        if (isMounted) {
+          if (gStatus) setGraphStatus(gStatus);
+          if (gSub) setGraphSubgraph(gSub);
+        }
       } else if (activeTab === "files") {
         const res = await fetchRepositoryFiles(repositoryId, workspaceId, { limit: 100 });
         if (isMounted && res) setFiles(res.files);
@@ -109,7 +140,7 @@ export function RepositoryIntelligenceModal({
     return () => {
       isMounted = false;
     };
-  }, [isOpen, activeTab, repositoryId, workspaceId]);
+  }, [isOpen, activeTab, repositoryId, workspaceId, overview?.latest_snapshot?.id]);
 
   const handleSemanticSearch = async (queryToRun?: string) => {
     const q = (queryToRun !== undefined ? queryToRun : semanticQuery).trim();
@@ -135,9 +166,95 @@ export function RepositoryIntelligenceModal({
     }
   };
 
+  const handleTriggerGraphIndexing = async () => {
+    if (!overview?.latest_snapshot?.id || isIndexingGraph) return;
+    setIsIndexingGraph(true);
+    try {
+      const res = await triggerGraphIndexing(
+        repositoryId,
+        workspaceId,
+        overview.latest_snapshot.id,
+        true,
+      );
+      if (res) {
+        setGraphStatus(res);
+        const sub = await fetchRepositoryGraph(repositoryId, workspaceId, {
+          snapshot_id: overview.latest_snapshot.id,
+          limit: 150,
+        });
+        if (sub) setGraphSubgraph(sub);
+      }
+    } finally {
+      setIsIndexingGraph(false);
+    }
+  };
+
+  const handleAnalyzeImpact = async (node: GraphNode) => {
+    if (!overview?.latest_snapshot?.id || isLoadingImpact) return;
+    setIsLoadingImpact(true);
+    try {
+      const res = await fetchImpactPreview(repositoryId, workspaceId, {
+        snapshot_id: overview.latest_snapshot.id,
+        file_path: node.properties.file_path,
+        symbol_name: node.properties.name,
+        symbol_id: node.id,
+        max_depth: 3,
+      });
+      if (res) {
+        setImpactPreview(res);
+      }
+    } finally {
+      setIsLoadingImpact(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   const snapshot = overview?.latest_snapshot;
+
+  // Filtered Graph Nodes
+  const filteredGraphNodes = (graphSubgraph?.nodes || []).filter((node) => {
+    const matchesSearch =
+      graphSearch === "" ||
+      node.id.toLowerCase().includes(graphSearch.toLowerCase()) ||
+      (node.properties.name && node.properties.name.toLowerCase().includes(graphSearch.toLowerCase())) ||
+      (node.properties.file_path && node.properties.file_path.toLowerCase().includes(graphSearch.toLowerCase()));
+    const matchesType = graphTypeFilter === "all" || node.label === graphTypeFilter;
+    return matchesSearch && matchesType;
+  });
+
+  const getNodeBadgeStyle = (label: string) => {
+    switch (label) {
+      case "APIEndpoint":
+        return "bg-emerald-50 text-emerald-700 border-emerald-200";
+      case "DatabaseTable":
+      case "DatabaseModel":
+        return "bg-amber-50 text-amber-700 border-amber-200";
+      case "TestCase":
+        return "bg-purple-50 text-purple-700 border-purple-200";
+      case "Class":
+      case "Interface":
+        return "bg-blue-50 text-blue-700 border-blue-200";
+      case "Function":
+      case "Method":
+        return "bg-indigo-50 text-indigo-700 border-indigo-200";
+      default:
+        return "bg-slate-50 text-slate-700 border-slate-200";
+    }
+  };
+
+  const getRiskBadgeStyle = (risk: string) => {
+    switch (risk) {
+      case "CRITICAL":
+        return "bg-rose-500 text-white";
+      case "HIGH":
+        return "bg-orange-500 text-white";
+      case "MEDIUM":
+        return "bg-amber-500 text-white";
+      default:
+        return "bg-emerald-500 text-white";
+    }
+  };
 
   // Filtered Files
   const filteredFiles = files.filter((f) => {
@@ -250,6 +367,27 @@ export function RepositoryIntelligenceModal({
               className="text-[9px] py-0 px-1 font-mono bg-indigo-50 text-indigo-700 border-indigo-200"
             >
               AI Vector
+            </Badge>
+          </button>
+          <button
+            data-testid="tab-knowledge-graph"
+            onClick={() => {
+              setActiveTab("graph");
+              setSearchQuery("");
+            }}
+            className={`py-3 flex items-center gap-1.5 border-b-2 font-medium transition-colors ${
+              activeTab === "graph"
+                ? "border-indigo-600 text-indigo-600 font-semibold"
+                : "border-transparent text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            <Network className="h-3.5 w-3.5 text-purple-600" />
+            Knowledge Graph
+            <Badge
+              variant="secondary"
+              className="text-[9px] py-0 px-1 font-mono bg-purple-50 text-purple-700 border-purple-200"
+            >
+              Neo4j
             </Badge>
           </button>
           <button
@@ -718,6 +856,292 @@ export function RepositoryIntelligenceModal({
                   </p>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* TAB: KNOWLEDGE GRAPH */}
+          {activeTab === "graph" && (
+            <div className="space-y-4">
+              {/* Graph Status Header Banner */}
+              <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-purple-50 text-purple-600 border border-purple-100">
+                    <Network className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-xs font-semibold text-slate-900">
+                        Code Knowledge Graph & Relationship Engine
+                      </h3>
+                      <Badge variant="outline" className="text-[10px] bg-slate-50 border-slate-200 font-mono">
+                        Provider: {graphStatus?.provider || "Neo4j / In-Memory"}
+                      </Badge>
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Multi-language AST symbols, callers, imports, inheritance, API endpoints, and database models.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="px-2.5 py-1 bg-slate-100 rounded-md font-mono text-slate-700 border border-slate-200">
+                      <strong>{graphStatus?.total_nodes ?? graphSubgraph?.total_nodes ?? 0}</strong> Nodes
+                    </span>
+                    <span className="px-2.5 py-1 bg-slate-100 rounded-md font-mono text-slate-700 border border-slate-200">
+                      <strong>{graphStatus?.total_relationships ?? graphSubgraph?.total_edges ?? 0}</strong> Relationships
+                    </span>
+                  </div>
+
+                  <Button
+                    data-testid="index-graph-button"
+                    size="sm"
+                    onClick={handleTriggerGraphIndexing}
+                    disabled={isIndexingGraph || !snapshot?.id}
+                    className="h-8 px-3 text-xs bg-purple-600 hover:bg-purple-700 text-white font-medium"
+                  >
+                    {isIndexingGraph ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                        Indexing Graph...
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+                        Re-Index Graph
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </div>
+
+              {/* Search & Type Filter Controls */}
+              <div className="flex items-center justify-between gap-3 text-xs">
+                <div className="relative flex-1 max-w-sm">
+                  <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-400" />
+                  <Input
+                    type="text"
+                    placeholder="Filter graph nodes by name or path..."
+                    value={graphSearch}
+                    onChange={(e) => setGraphSearch(e.target.value)}
+                    className="pl-8 text-xs h-7.5 bg-white border-slate-200"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-500 text-xs font-medium">Node Type:</span>
+                  <select
+                    value={graphTypeFilter}
+                    onChange={(e) => setGraphTypeFilter(e.target.value)}
+                    className="h-7.5 px-2.5 rounded-md border border-slate-200 bg-white text-xs text-slate-700"
+                  >
+                    <option value="all">All Types</option>
+                    <option value="File">Files</option>
+                    <option value="Function">Functions</option>
+                    <option value="Method">Methods</option>
+                    <option value="Class">Classes</option>
+                    <option value="Interface">Interfaces</option>
+                    <option value="APIEndpoint">API Endpoints</option>
+                    <option value="DatabaseTable">Database Tables</option>
+                    <option value="TestCase">Test Cases</option>
+                    <option value="ExternalDependency">Dependencies</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Two-Column Explorer Layout */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                {/* Left Panel: Nodes & Relationships List */}
+                <div className="lg:col-span-7 bg-white rounded-xl border border-slate-200 shadow-xs p-3 max-h-[500px] overflow-y-auto space-y-2">
+                  {filteredGraphNodes.length === 0 ? (
+                    <div className="p-8 text-center text-slate-500 text-xs">
+                      {isIndexingGraph ? "Extracting knowledge graph relationships..." : "No graph entities matched your filter."}
+                    </div>
+                  ) : (
+                    filteredGraphNodes.map((node) => {
+                      const isSelected = selectedGraphNode?.id === node.id;
+                      const incomingEdges = (graphSubgraph?.edges || []).filter((e) => e.target_id === node.id);
+                      const outgoingEdges = (graphSubgraph?.edges || []).filter((e) => e.source_id === node.id);
+
+                      return (
+                        <div
+                          key={node.id}
+                          onClick={() => {
+                            setSelectedGraphNode(node);
+                            setImpactPreview(null);
+                          }}
+                          className={`p-3 rounded-lg border transition-all cursor-pointer text-xs ${
+                            isSelected
+                              ? "bg-purple-50/60 border-purple-300 ring-1 ring-purple-400"
+                              : "bg-slate-50/50 hover:bg-slate-100/70 border-slate-200/80"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <Badge variant="outline" className={`text-[10px] font-mono ${getNodeBadgeStyle(node.label)}`}>
+                                {node.label}
+                              </Badge>
+                              <span className="font-semibold text-slate-900 font-mono">
+                                {node.properties.name || node.properties.table_name || node.properties.path || node.id}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1.5 text-[10px] text-slate-500">
+                              {incomingEdges.length > 0 && (
+                                <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200 font-mono">
+                                  {incomingEdges.length} in
+                                </span>
+                              )}
+                              {outgoingEdges.length > 0 && (
+                                <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200 font-mono">
+                                  {outgoingEdges.length} out
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {node.properties.file_path && (
+                            <div className="mt-1 text-[11px] text-slate-500 font-mono truncate">
+                              {node.properties.file_path}
+                              {node.properties.start_line && `:${node.properties.start_line}`}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                {/* Right Panel: Interactive Node Inspector & Blast Radius Impact Preview */}
+                <div className="lg:col-span-5 bg-white rounded-xl border border-slate-200 shadow-xs p-4 max-h-[500px] overflow-y-auto space-y-4">
+                  {!selectedGraphNode ? (
+                    <div className="p-8 text-center text-slate-400 text-xs">
+                      <Network className="h-8 w-8 text-slate-300 mx-auto mb-2" />
+                      <p>Select any node on the left to inspect code relationships, callers, and blast radius impact.</p>
+                    </div>
+                  ) : (
+                    <>
+                      {/* Node Details Header */}
+                      <div className="border-b border-slate-100 pb-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <Badge variant="outline" className={`text-[10px] font-mono ${getNodeBadgeStyle(selectedGraphNode.label)}`}>
+                            {selectedGraphNode.label}
+                          </Badge>
+                          <Button
+                            size="sm"
+                            data-testid="analyze-impact-button"
+                            onClick={() => handleAnalyzeImpact(selectedGraphNode)}
+                            disabled={isLoadingImpact}
+                            className="h-7 px-2.5 text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-medium"
+                          >
+                            {isLoadingImpact ? (
+                              <>
+                                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                                Analyzing...
+                              </>
+                            ) : (
+                              <>
+                                <AlertTriangle className="h-3 w-3 mr-1" />
+                                Blast Radius Preview
+                              </>
+                            )}
+                          </Button>
+                        </div>
+                        <h4 className="text-sm font-bold text-slate-900 mt-2 font-mono">
+                          {selectedGraphNode.properties.name || selectedGraphNode.properties.table_name || selectedGraphNode.properties.path || selectedGraphNode.id}
+                        </h4>
+                        {selectedGraphNode.properties.file_path && (
+                          <p className="text-[11px] text-slate-500 font-mono mt-0.5">
+                            {selectedGraphNode.properties.file_path}
+                            {selectedGraphNode.properties.start_line && ` (lines ${selectedGraphNode.properties.start_line}-${selectedGraphNode.properties.end_line})`}
+                          </p>
+                        )}
+                        {selectedGraphNode.properties.signature && (
+                          <pre className="mt-2 text-[10px] bg-slate-900 text-slate-100 p-2 rounded-md overflow-x-auto font-mono">
+                            {selectedGraphNode.properties.signature}
+                          </pre>
+                        )}
+                      </div>
+
+                      {/* Impact Preview Section if calculated */}
+                      {impactPreview && (
+                        <div className="p-3 rounded-lg border border-indigo-200 bg-indigo-50/40 space-y-2.5 text-xs">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-slate-800 flex items-center gap-1.5">
+                              <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+                              Impact Analysis & Risk
+                            </span>
+                            <Badge className={`text-[10px] ${getRiskBadgeStyle(impactPreview.risk_level)}`}>
+                              {impactPreview.risk_level} ({impactPreview.risk_score}/100)
+                            </Badge>
+                          </div>
+
+                          <ul className="space-y-1 text-[11px] text-slate-700 list-disc list-inside">
+                            {impactPreview.reasons.map((r, idx) => (
+                              <li key={idx}>{r}</li>
+                            ))}
+                          </ul>
+
+                          {impactPreview.affected_endpoints.length > 0 && (
+                            <div className="pt-1">
+                              <span className="text-[11px] font-semibold text-emerald-800 block">
+                                Affected API Endpoints ({impactPreview.affected_endpoints.length})
+                              </span>
+                              <div className="space-y-1 mt-1">
+                                {impactPreview.affected_endpoints.map((ep, idx) => (
+                                  <div key={idx} className="text-[10px] font-mono bg-white p-1 rounded border border-emerald-200 text-emerald-900">
+                                    {ep.name}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {impactPreview.affected_tests.length > 0 && (
+                            <div className="pt-1">
+                              <span className="text-[11px] font-semibold text-purple-800 block">
+                                Recommended Tests to Run ({impactPreview.affected_tests.length})
+                              </span>
+                              <div className="space-y-1 mt-1">
+                                {impactPreview.affected_tests.map((tc, idx) => (
+                                  <div key={idx} className="text-[10px] font-mono bg-white p-1 rounded border border-purple-200 text-purple-900">
+                                    {tc.name}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Direct Relationships */}
+                      <div className="space-y-2 text-xs">
+                        <span className="font-semibold text-slate-800 block">Direct Graph Relationships</span>
+                        <div className="space-y-1">
+                          {(graphSubgraph?.edges || [])
+                            .filter((e) => e.source_id === selectedGraphNode.id || e.target_id === selectedGraphNode.id)
+                            .map((e, idx) => {
+                              const isOut = e.source_id === selectedGraphNode.id;
+                              const otherId = isOut ? e.target_id : e.source_id;
+                              return (
+                                <div key={idx} className="p-2 rounded bg-slate-50 border border-slate-200/80 flex items-center justify-between text-[11px]">
+                                  <div className="flex items-center gap-1.5 font-mono">
+                                    <Badge variant="secondary" className="text-[9px] px-1 py-0">
+                                      {e.type}
+                                    </Badge>
+                                    <span className="text-slate-600 truncate max-w-[180px]">{otherId}</span>
+                                  </div>
+                                  <span className="text-[10px] text-slate-400 font-mono">
+                                    {isOut ? "outgoing" : "incoming"}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
             </div>
           )}
 
