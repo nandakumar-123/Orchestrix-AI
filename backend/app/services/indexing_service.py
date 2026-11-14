@@ -493,6 +493,22 @@ async def _execute_indexing_job_background(
                 snapshot.structure_summary = structure_summary
                 snapshot.entry_points = detected_entry_points
 
+                # 7. Semantic Chunking & Vector Embedding
+                try:
+                    from app.services.semantic_indexing_service import SemanticIndexingService
+
+                    semantic_svc = SemanticIndexingService()
+                    await semantic_svc.index_snapshot(
+                        db=db,
+                        workspace_id=workspace_id,
+                        repository_id=repository_id,
+                        snapshot_id=snapshot.id,
+                    )
+                except Exception as sem_err:
+                    logger.warning(
+                        "Non-fatal semantic indexing error during job %s: %s", job.id, sem_err
+                    )
+
                 # Update Repository last_indexed_at
                 repo_obj = await db.get(Repository, repository_id)
                 if repo_obj:

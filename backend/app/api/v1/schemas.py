@@ -430,3 +430,143 @@ class FileDependencyListResponse(BaseModel):
 
     dependencies: list[FileDependencyResponse]
     total: int
+
+
+# -----------------------------------------------------------------------------
+# Semantic Code Intelligence & Retrieval Schemas
+# -----------------------------------------------------------------------------
+
+
+class SemanticIndexRequest(BaseModel):
+    """Payload to trigger semantic indexing for a repository snapshot."""
+
+    snapshot_id: uuid.UUID | None = Field(
+        default=None, description="Target snapshot ID (defaults to latest if omitted)"
+    )
+    force_reembed: bool = Field(
+        default=False, description="Whether to invalidate and re-embed all content"
+    )
+
+
+class SemanticIndexStatusResponse(BaseModel):
+    """Status of semantic indexing for a repository snapshot."""
+
+    repository_id: uuid.UUID
+    snapshot_id: uuid.UUID | None
+    provider_name: str
+    model_name: str
+    dimension: int
+    total_chunks: int
+    status: str  # "pending", "indexing", "completed", "failed", "unindexed"
+    error_message: str | None = None
+    completed_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SemanticSearchRequest(BaseModel):
+    """Natural-language semantic and hybrid code search query payload."""
+
+    query: str = Field(
+        ..., min_length=2, max_length=1000, description="Natural language search query"
+    )
+    snapshot_id: uuid.UUID | None = Field(default=None, description="Filter by snapshot ID")
+    language: str | None = Field(default=None, description="Filter by programming language")
+    symbol_type: str | None = Field(
+        default=None, description="Filter by symbol type (e.g. function, class)"
+    )
+    file_path_prefix: str | None = Field(default=None, description="Filter by path prefix")
+    limit: int = Field(default=10, ge=1, le=50, description="Maximum number of results to return")
+
+
+class SemanticSearchResultItem(BaseModel):
+    """Individual retrieved code chunk result."""
+
+    chunk_id: uuid.UUID
+    repository_id: uuid.UUID
+    repository_name: str
+    snapshot_id: uuid.UUID
+    file_path: str
+    language: str
+    symbol_name: str | None = None
+    symbol_type: str | None = None
+    parent_symbol_name: str | None = None
+    start_line: int
+    end_line: int
+    source_code_excerpt: str
+    similarity_score: float
+    vector_score: float
+    lexical_score: float
+    symbol_score: float
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SemanticSearchResponse(BaseModel):
+    """Response containing ranked retrieved code chunks."""
+
+    repository_id: uuid.UUID
+    query: str
+    total_results: int
+    results: list[SemanticSearchResultItem]
+
+
+class SemanticChunkDetailResponse(BaseModel):
+    """Full detail of an individual semantic code chunk."""
+
+    id: uuid.UUID
+    workspace_id: uuid.UUID
+    repository_id: uuid.UUID
+    snapshot_id: uuid.UUID
+    file_id: uuid.UUID
+    file_path: str
+    language: str
+    symbol_name: str | None = None
+    symbol_type: str | None = None
+    parent_symbol_name: str | None = None
+    start_line: int
+    end_line: int
+    chunk_index: int
+    content: str
+    content_hash: str
+    metadata: dict[str, Any] | None = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AssembledContextRequest(BaseModel):
+    """Request to assemble structured AI agent context from search query."""
+
+    query: str = Field(..., min_length=2, max_length=1000)
+    snapshot_id: uuid.UUID | None = None
+    language: str | None = None
+    limit: int = Field(default=8, ge=1, le=25)
+    max_characters: int = Field(default=32000, ge=1000, le=100000)
+
+
+class AssembledCodeBlockResponse(BaseModel):
+    """Individual assembled code block."""
+
+    file_path: str
+    language: str
+    start_line: int
+    end_line: int
+    symbol_name: str | None = None
+    symbol_type: str | None = None
+    parent_symbol_name: str | None = None
+    code: str
+    similarity_score: float
+
+
+class AssembledContextResponse(BaseModel):
+    """Context assembly response payload for agent consumption."""
+
+    repository_id: uuid.UUID
+    repository_name: str
+    query: str
+    total_chunks_retrieved: int
+    total_blocks_included: int
+    total_characters: int
+    estimated_tokens: int
+    formatted_context_markdown: str
+    blocks: list[AssembledCodeBlockResponse]

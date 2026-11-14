@@ -57,6 +57,8 @@ dependencies = [
     "tree-sitter-toml>=0.7.0",
     "tree-sitter-json>=0.24.8",
     "tree-sitter-pascal>=0.11.0",
+    "pgvector>=0.5.1",
+    "fastembed>=0.9.1",
 ]
 
 [project.optional-dependencies]

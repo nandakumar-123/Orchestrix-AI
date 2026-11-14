@@ -27,6 +27,10 @@ from app.db.models.repository_intelligence import (
     RepositorySnapshot,
 )
 from app.db.models.repository_member import RepositoryMember
+from app.db.models.semantic_intelligence import (
+    EmbeddingModelMetadata,
+    SemanticCodeChunk,
+)
 from app.db.models.user import User
 from app.db.models.workspace import Workspace
 
@@ -58,4 +62,6 @@ __all__ = [
     "CodeSymbol",
     "FileDependency",
     "IndexingError",
+    "SemanticCodeChunk",
+    "EmbeddingModelMetadata",
 ]

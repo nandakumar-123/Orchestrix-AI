@@ -6,10 +6,14 @@ import {
   FileDependencyItem,
   RepositoryFileItem,
   RepositoryIntelligenceOverview,
+  SemanticIndexStatusResponse,
+  SemanticSearchResultItem,
   SupportedLanguagesResponse,
+  executeSemanticSearch,
   fetchRepositoryDependencies,
   fetchRepositoryFiles,
   fetchRepositorySymbols,
+  fetchSemanticIndexStatus,
   fetchSupportedLanguages,
 } from "@/lib/indexing";
 import {
@@ -24,6 +28,7 @@ import {
   GitCommit,
   Clock,
   Globe2,
+  BrainCircuit,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -51,7 +56,7 @@ export function RepositoryIntelligenceModal({
   isIndexing,
 }: RepositoryIntelligenceModalProps) {
   const [activeTab, setActiveTab] = React.useState<
-    "overview" | "files" | "symbols" | "dependencies" | "languages"
+    "overview" | "semantic" | "files" | "symbols" | "dependencies" | "languages"
   >("overview");
   const [supportedLangs, setSupportedLangs] = React.useState<SupportedLanguagesResponse | null>(null);
 
@@ -59,6 +64,14 @@ export function RepositoryIntelligenceModal({
   const [files, setFiles] = React.useState<RepositoryFileItem[]>([]);
   const [symbols, setSymbols] = React.useState<CodeSymbolItem[]>([]);
   const [dependencies, setDependencies] = React.useState<FileDependencyItem[]>([]);
+
+  // Semantic Search States
+  const [semanticQuery, setSemanticQuery] = React.useState("");
+  const [semanticResults, setSemanticResults] = React.useState<SemanticSearchResultItem[]>([]);
+  const [semanticStatus, setSemanticStatus] = React.useState<SemanticIndexStatusResponse | null>(null);
+  const [isSearchingSemantic, setIsSearchingSemantic] = React.useState(false);
+  const [hasSearchedSemantic, setHasSearchedSemantic] = React.useState(false);
+  const [selectedChunk, setSelectedChunk] = React.useState<SemanticSearchResultItem | null>(null);
 
   // Search & Filter States
   const [searchQuery, setSearchQuery] = React.useState("");
@@ -73,7 +86,10 @@ export function RepositoryIntelligenceModal({
     let isMounted = true;
     async function loadData() {
       setLoadingTab(true);
-      if (activeTab === "files") {
+      if (activeTab === "semantic") {
+        const res = await fetchSemanticIndexStatus(repositoryId, workspaceId);
+        if (isMounted && res) setSemanticStatus(res);
+      } else if (activeTab === "files") {
         const res = await fetchRepositoryFiles(repositoryId, workspaceId, { limit: 100 });
         if (isMounted && res) setFiles(res.files);
       } else if (activeTab === "symbols") {
@@ -94,6 +110,30 @@ export function RepositoryIntelligenceModal({
       isMounted = false;
     };
   }, [isOpen, activeTab, repositoryId, workspaceId]);
+
+  const handleSemanticSearch = async (queryToRun?: string) => {
+    const q = (queryToRun !== undefined ? queryToRun : semanticQuery).trim();
+    if (!q || !repositoryId || !workspaceId) return;
+
+    setIsSearchingSemantic(true);
+    setHasSearchedSemantic(true);
+    try {
+      const res = await executeSemanticSearch(repositoryId, workspaceId, q, {
+        language: selectedLanguage !== "all" ? selectedLanguage : undefined,
+        symbol_type: selectedSymbolType !== "all" ? selectedSymbolType : undefined,
+        limit: 15,
+      });
+      if (res && res.results) {
+        setSemanticResults(res.results);
+      } else {
+        setSemanticResults([]);
+      }
+    } catch {
+      setSemanticResults([]);
+    } finally {
+      setIsSearchingSemantic(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -183,25 +223,44 @@ export function RepositoryIntelligenceModal({
               setActiveTab("overview");
               setSearchQuery("");
             }}
+            className={`py-3 flex items-center gap-1.5 border-b-2 font-medium transition-colors ${activeTab === "overview"
+              ? "border-indigo-600 text-indigo-600 font-semibold"
+              : "border-transparent text-slate-500 hover:text-slate-800"
+              }`}
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            Overview
+          </button>
+          <button
+            data-testid="tab-semantic-search"
+            onClick={() => {
+              setActiveTab("semantic");
+              setSearchQuery("");
+            }}
             className={`py-3 flex items-center gap-1.5 border-b-2 font-medium transition-colors ${
-              activeTab === "overview"
+              activeTab === "semantic"
                 ? "border-indigo-600 text-indigo-600 font-semibold"
                 : "border-transparent text-slate-500 hover:text-slate-800"
             }`}
           >
-            <Sparkles className="h-3.5 w-3.5" />
-            Overview
+            <BrainCircuit className="h-3.5 w-3.5 text-indigo-600" />
+            Semantic Search
+            <Badge
+              variant="secondary"
+              className="text-[9px] py-0 px-1 font-mono bg-indigo-50 text-indigo-700 border-indigo-200"
+            >
+              AI Vector
+            </Badge>
           </button>
           <button
             onClick={() => {
               setActiveTab("files");
               setSearchQuery("");
             }}
-            className={`py-3 flex items-center gap-1.5 border-b-2 font-medium transition-colors ${
-              activeTab === "files"
-                ? "border-indigo-600 text-indigo-600 font-semibold"
-                : "border-transparent text-slate-500 hover:text-slate-800"
-            }`}
+            className={`py-3 flex items-center gap-1.5 border-b-2 font-medium transition-colors ${activeTab === "files"
+              ? "border-indigo-600 text-indigo-600 font-semibold"
+              : "border-transparent text-slate-500 hover:text-slate-800"
+              }`}
           >
             <FileCode className="h-3.5 w-3.5" />
             Files ({snapshot?.total_files ?? 0})
@@ -211,11 +270,10 @@ export function RepositoryIntelligenceModal({
               setActiveTab("symbols");
               setSearchQuery("");
             }}
-            className={`py-3 flex items-center gap-1.5 border-b-2 font-medium transition-colors ${
-              activeTab === "symbols"
-                ? "border-indigo-600 text-indigo-600 font-semibold"
-                : "border-transparent text-slate-500 hover:text-slate-800"
-            }`}
+            className={`py-3 flex items-center gap-1.5 border-b-2 font-medium transition-colors ${activeTab === "symbols"
+              ? "border-indigo-600 text-indigo-600 font-semibold"
+              : "border-transparent text-slate-500 hover:text-slate-800"
+              }`}
           >
             <Layers className="h-3.5 w-3.5" />
             Symbols ({snapshot?.total_symbols ?? 0})
@@ -225,11 +283,10 @@ export function RepositoryIntelligenceModal({
               setActiveTab("dependencies");
               setSearchQuery("");
             }}
-            className={`py-3 flex items-center gap-1.5 border-b-2 font-medium transition-colors ${
-              activeTab === "dependencies"
-                ? "border-indigo-600 text-indigo-600 font-semibold"
-                : "border-transparent text-slate-500 hover:text-slate-800"
-            }`}
+            className={`py-3 flex items-center gap-1.5 border-b-2 font-medium transition-colors ${activeTab === "dependencies"
+              ? "border-indigo-600 text-indigo-600 font-semibold"
+              : "border-transparent text-slate-500 hover:text-slate-800"
+              }`}
           >
             <Package className="h-3.5 w-3.5" />
             Dependencies ({snapshot?.total_dependencies ?? 0})
@@ -239,11 +296,10 @@ export function RepositoryIntelligenceModal({
               setActiveTab("languages");
               setSearchQuery("");
             }}
-            className={`py-3 flex items-center gap-1.5 border-b-2 font-medium transition-colors ${
-              activeTab === "languages"
-                ? "border-indigo-600 text-indigo-600 font-semibold"
-                : "border-transparent text-slate-500 hover:text-slate-800"
-            }`}
+            className={`py-3 flex items-center gap-1.5 border-b-2 font-medium transition-colors ${activeTab === "languages"
+              ? "border-indigo-600 text-indigo-600 font-semibold"
+              : "border-transparent text-slate-500 hover:text-slate-800"
+              }`}
           >
             <Globe2 className="h-3.5 w-3.5" />
             Registry ({supportedLangs?.total_supported ?? "40+"})
@@ -360,27 +416,33 @@ export function RepositoryIntelligenceModal({
                   </div>
 
                   {/* Detected Frameworks */}
-                  {((overview?.detected_frameworks && overview.detected_frameworks.length > 0) ||
-                    (overview?.latest_snapshot?.detected_frameworks &&
-                      overview.latest_snapshot.detected_frameworks.length > 0)) && (
-                    <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs space-y-2">
-                      <h4 className="text-xs font-semibold text-slate-800 uppercase tracking-wider">
-                        Recognized Frameworks & Technologies
-                      </h4>
-                      <div className="flex flex-wrap gap-2">
-                        {(overview.detected_frameworks || overview.latest_snapshot?.detected_frameworks || []).map((fw) => (
-                          <Badge
-                            key={fw}
-                            variant="secondary"
-                            className="text-xs bg-indigo-50 text-indigo-800 border-indigo-200 font-medium py-1 px-2.5"
-                          >
-                            <Sparkles className="h-3 w-3 mr-1 text-indigo-600" />
-                            {fw}
-                          </Badge>
-                        ))}
+                  {(overview?.detected_frameworks ||
+                    overview?.latest_snapshot?.detected_frameworks) &&
+                    (overview?.detected_frameworks ||
+                      overview?.latest_snapshot?.detected_frameworks ||
+                      []).length > 0 && (
+                      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs space-y-2">
+                        <h4 className="text-xs font-semibold text-slate-800 uppercase tracking-wider">
+                          Recognized Frameworks & Technologies
+                        </h4>
+                        <div className="flex flex-wrap gap-2">
+                          {(
+                            overview?.detected_frameworks ||
+                            overview?.latest_snapshot?.detected_frameworks ||
+                            []
+                          ).map((fw) => (
+                            <Badge
+                              key={fw}
+                              variant="secondary"
+                              className="text-xs bg-indigo-50 text-indigo-800 border-indigo-200 font-medium py-1 px-2.5"
+                            >
+                              <Sparkles className="h-3 w-3 mr-1 text-indigo-600" />
+                              {fw}
+                            </Badge>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    )}
 
                   {/* Entry Point Candidates */}
                   {snapshot.entry_points && snapshot.entry_points.length > 0 && (
@@ -406,7 +468,260 @@ export function RepositoryIntelligenceModal({
             </div>
           )}
 
-          {/* TAB 2: FILES */}
+          {/* TAB 2: SEMANTIC CODE SEARCH & RETRIEVAL */}
+          {activeTab === "semantic" && (
+            <div className="space-y-4" data-testid="semantic-search-panel">
+              {/* Header & Status Banner */}
+              <div className="bg-white p-4 rounded-xl border border-slate-200/90 shadow-2xs space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-xs font-semibold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
+                        <BrainCircuit className="h-4 w-4 text-indigo-600" />
+                        Semantic Code Intelligence & Retrieval
+                      </h4>
+                      <Badge
+                        variant="outline"
+                        className="text-[10px] font-mono text-indigo-700 bg-indigo-50 border-indigo-200"
+                      >
+                        Hybrid Vector + AST
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Query repository functions, classes, and logic using natural language.
+                    </p>
+                  </div>
+                  {semanticStatus && (
+                    <div className="flex items-center gap-2 text-[11px] font-mono text-slate-600 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200">
+                      <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                      <span>{semanticStatus.model_name.split("/").pop()}</span>
+                      <span className="text-slate-400">•</span>
+                      <span>{semanticStatus.total_chunks} Chunks Indexed</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Natural Language Search Input */}
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleSemanticSearch();
+                  }}
+                  className="flex gap-2"
+                >
+                  <div className="relative flex-1">
+                    <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                    <Input
+                      data-testid="semantic-search-input"
+                      type="text"
+                      placeholder="Ask where logic is implemented (e.g. 'Where is user authentication handled?')..."
+                      value={semanticQuery}
+                      onChange={(e) => setSemanticQuery(e.target.value)}
+                      className="pl-9 text-xs h-9 bg-slate-50/50 border-slate-200 focus-visible:ring-indigo-500"
+                    />
+                  </div>
+                  <Button
+                    data-testid="semantic-search-button"
+                    type="submit"
+                    size="sm"
+                    disabled={isSearchingSemantic || !semanticQuery.trim()}
+                    className="h-9 px-4 text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-medium"
+                  >
+                    {isSearchingSemantic ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                        Retrieving...
+                      </>
+                    ) : (
+                      <>
+                        <BrainCircuit className="h-3.5 w-3.5 mr-1.5" />
+                        Semantic Search
+                      </>
+                    )}
+                  </Button>
+                </form>
+
+                {/* Suggested Natural Language Queries */}
+                <div className="flex items-center gap-1.5 flex-wrap pt-1">
+                  <span className="text-[11px] text-slate-400 font-medium">Try:</span>
+                  {[
+                    "Where is user authentication handled?",
+                    "Database connection and pool settings",
+                    "GitHub OAuth redirect and callback",
+                    "Repository intelligence indexing job",
+                  ].map((chip) => (
+                    <button
+                      key={chip}
+                      type="button"
+                      onClick={() => {
+                        setSemanticQuery(chip);
+                        handleSemanticSearch(chip);
+                      }}
+                      className="text-[11px] font-mono text-slate-600 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 hover:border-indigo-200 border border-slate-200/80 px-2 py-0.5 rounded-md transition-colors"
+                    >
+                      {chip}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Filters */}
+              <div className="flex items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-500 text-xs font-medium">Filters:</span>
+                  <select
+                    value={selectedLanguage}
+                    onChange={(e) => setSelectedLanguage(e.target.value)}
+                    className="h-7.5 px-2.5 rounded-md border border-slate-200 bg-white text-xs text-slate-700"
+                  >
+                    <option value="all">All Languages</option>
+                    {Object.keys(snapshot?.languages_summary || {}).map((lang) => (
+                      <option key={lang} value={lang}>
+                        {lang}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={selectedSymbolType}
+                    onChange={(e) => setSelectedSymbolType(e.target.value)}
+                    className="h-7.5 px-2.5 rounded-md border border-slate-200 bg-white text-xs text-slate-700"
+                  >
+                    <option value="all">All Symbol Types</option>
+                    <option value="function">Function</option>
+                    <option value="method">Method</option>
+                    <option value="class">Class</option>
+                    <option value="interface">Interface</option>
+                    <option value="struct">Struct</option>
+                    <option value="file_summary">File Overview</option>
+                  </select>
+                </div>
+
+                {hasSearchedSemantic && (
+                  <span className="text-xs text-slate-500 font-medium">
+                    Found <strong className="text-slate-800">{semanticResults.length}</strong> matching chunks
+                  </span>
+                )}
+              </div>
+
+              {/* Results Container */}
+              {isSearchingSemantic ? (
+                <div className="p-12 text-center bg-white rounded-xl border border-slate-200">
+                  <Loader2 className="h-7 w-7 animate-spin text-indigo-600 mx-auto" />
+                  <p className="text-xs font-medium text-slate-700 mt-2">
+                    Computing query vector and ranking code chunks...
+                  </p>
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Executing HNSW cosine similarity and lexical token fusion
+                  </p>
+                </div>
+              ) : hasSearchedSemantic && semanticResults.length === 0 ? (
+                <div className="p-8 text-center bg-white rounded-xl border border-slate-200">
+                  <Search className="h-6 w-6 text-slate-400 mx-auto mb-2" />
+                  <p className="text-xs font-medium text-slate-700">No code chunks matched your query.</p>
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Try broadening your search terms or clearing language filters.
+                  </p>
+                </div>
+              ) : semanticResults.length > 0 ? (
+                <div className="space-y-3" data-testid="semantic-results-list">
+                  {semanticResults.map((result) => {
+                    const matchPercent = Math.round(result.similarity_score * 100);
+                    return (
+                      <div
+                        key={result.chunk_id}
+                        data-testid="semantic-result-item"
+                        className="p-3.5 bg-white rounded-xl border border-slate-200 shadow-2xs hover:border-indigo-300 transition-colors space-y-2.5"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-mono font-semibold text-xs text-indigo-950 truncate">
+                                {result.file_path}
+                              </span>
+                              <span className="text-slate-400 font-mono text-[11px]">
+                                L{result.start_line}-L{result.end_line}
+                              </span>
+                              <Badge
+                                variant="outline"
+                                className="text-[10px] py-0 px-1.5 font-mono text-slate-600"
+                              >
+                                {result.language}
+                              </Badge>
+                              {result.symbol_name && (
+                                <Badge
+                                  variant="secondary"
+                                  className="text-[10px] py-0 px-1.5 font-mono bg-slate-100 text-slate-700"
+                                >
+                                  {result.symbol_type || "symbol"}: {result.symbol_name}
+                                  {result.parent_symbol_name && ` (${result.parent_symbol_name})`}
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span
+                              className={`text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full border ${
+                                matchPercent >= 80
+                                  ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                                  : matchPercent >= 60
+                                  ? "bg-indigo-50 text-indigo-800 border-indigo-200"
+                                  : "bg-slate-50 text-slate-700 border-slate-200"
+                              }`}
+                            >
+                              {matchPercent}% Match
+                            </span>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() =>
+                                setSelectedChunk(
+                                  selectedChunk?.chunk_id === result.chunk_id ? null : result
+                                )
+                              }
+                              className="text-[11px] h-7 px-2 text-indigo-600 hover:text-indigo-700"
+                            >
+                              {selectedChunk?.chunk_id === result.chunk_id ? "Hide Code" : "Inspect Code"}
+                            </Button>
+                          </div>
+                        </div>
+
+                        {/* Code snippet preview */}
+                        <pre className="bg-slate-900 text-slate-100 p-2.5 rounded-lg text-[11px] font-mono overflow-x-auto leading-relaxed max-h-48 border border-slate-800">
+                          <code>
+                            {selectedChunk?.chunk_id === result.chunk_id
+                              ? result.source_code_excerpt
+                              : result.source_code_excerpt}
+                          </code>
+                        </pre>
+
+                        <div className="flex items-center gap-3 text-[10px] text-slate-400 font-mono">
+                          <span>Vector Score: {(result.vector_score * 100).toFixed(1)}%</span>
+                          <span>•</span>
+                          <span>Lexical Score: {(result.lexical_score * 100).toFixed(1)}%</span>
+                          <span>•</span>
+                          <span>Symbol Score: {(result.symbol_score * 100).toFixed(1)}%</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="p-8 text-center bg-white rounded-xl border border-slate-200">
+                  <BrainCircuit className="h-8 w-8 text-indigo-400 mx-auto mb-2" />
+                  <p className="text-xs font-semibold text-slate-800">
+                    Ask a Question About the Codebase
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
+                    Type a query above or click one of the suggested prompts to semantically search
+                    across classes, functions, and architecture.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB 3: FILES */}
           {activeTab === "files" && (
             <div className="space-y-4">
               <div className="flex items-center gap-3">

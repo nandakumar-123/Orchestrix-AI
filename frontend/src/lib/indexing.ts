@@ -117,6 +117,127 @@ export interface FileDependencyListResponse {
   offset: number;
 }
 
+// -----------------------------------------------------------------------------
+// Semantic Intelligence & Retrieval Types & Functions
+// -----------------------------------------------------------------------------
+
+export interface SemanticSearchResultItem {
+  chunk_id: string;
+  repository_id: string;
+  repository_name: string;
+  snapshot_id: string;
+  file_path: string;
+  language: string;
+  symbol_name?: string | null;
+  symbol_type?: string | null;
+  parent_symbol_name?: string | null;
+  start_line: number;
+  end_line: number;
+  source_code_excerpt: string;
+  similarity_score: number;
+  vector_score: number;
+  lexical_score: number;
+  symbol_score: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SemanticSearchResponse {
+  repository_id: string;
+  query: string;
+  total_results: number;
+  results: SemanticSearchResultItem[];
+}
+
+export interface SemanticIndexStatusResponse {
+  repository_id: string;
+  snapshot_id?: string | null;
+  provider_name: string;
+  model_name: string;
+  dimension: number;
+  total_chunks: number;
+  status: "pending" | "indexing" | "completed" | "failed" | "unindexed";
+  error_message?: string | null;
+  completed_at?: string | null;
+}
+
+/**
+ * Execute semantic & hybrid code retrieval query against a repository.
+ */
+export async function executeSemanticSearch(
+  repositoryId: string,
+  workspaceId: string,
+  query: string,
+  options?: {
+    language?: string;
+    symbol_type?: string;
+    file_path_prefix?: string;
+    limit?: number;
+  },
+): Promise<SemanticSearchResponse | null> {
+  try {
+    const res = await fetchWithAuth(
+      `/api/v1/repositories/${repositoryId}/semantic-search?workspace_id=${workspaceId}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query,
+          language: options?.language || undefined,
+          symbol_type: options?.symbol_type || undefined,
+          file_path_prefix: options?.file_path_prefix || undefined,
+          limit: options?.limit || 10,
+        }),
+      },
+    );
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get semantic embedding and indexing status.
+ */
+export async function fetchSemanticIndexStatus(
+  repositoryId: string,
+  workspaceId: string,
+): Promise<SemanticIndexStatusResponse | null> {
+  try {
+    const res = await fetchWithAuth(
+      `/api/v1/repositories/${repositoryId}/semantic-index/status?workspace_id=${workspaceId}`,
+    );
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Trigger semantic AST chunking and embedding generation.
+ */
+export async function triggerSemanticIndex(
+  repositoryId: string,
+  workspaceId: string,
+  forceReembed: boolean = false,
+): Promise<SemanticIndexStatusResponse | null> {
+  try {
+    const res = await fetchWithAuth(
+      `/api/v1/repositories/${repositoryId}/semantic-index?workspace_id=${workspaceId}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force_reembed: forceReembed }),
+      },
+    );
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Trigger an indexing job for a repository.
  */

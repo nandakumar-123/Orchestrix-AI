@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import RepositoriesPage from "../app/repositories/page";
@@ -76,6 +76,8 @@ describe("Repository Intelligence & Indexing Integration", () => {
       github_login: "orchestrix-org",
     });
     vi.spyOn(githubModule, "fetchWorkspaceRepositories").mockResolvedValue([mockRepo]);
+    vi.spyOn(indexingModule, "fetchRepositoryIntelligence").mockResolvedValue(mockIntelligence);
+    vi.spyOn(indexingModule, "fetchSemanticIndexStatus").mockResolvedValue(null);
     vi.spyOn(indexingModule, "fetchRepositoryFiles").mockResolvedValue({
       files: [],
       total: 0,
@@ -253,8 +255,70 @@ describe("Repository Intelligence & Indexing Integration", () => {
   });
 
   it("renders detected frameworks and explores parser registry in modal", async () => {
+    vi.spyOn(indexingModule, "fetchRepositoryIntelligence").mockResolvedValue(mockIntelligence);
+
+    render(<RepositoriesPage />);
+
+    const exploreBtn = await screen.findByRole("button", { name: /Explore Intelligence/i });
+    fireEvent.click(exploreBtn);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("repository-intelligence-modal")).toBeInTheDocument();
+      expect(screen.getByText("FastAPI")).toBeInTheDocument();
+      expect(screen.getByText("React")).toBeInTheDocument();
+      expect(screen.getByText("Next.js")).toBeInTheDocument();
+    });
+
+    // Switch to Registry tab
+    const registryTab = screen.getByRole("button", { name: /Registry/i });
+    fireEvent.click(registryTab);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Universal Parser Registry/i)).toBeInTheDocument();
+      expect(screen.getByText("Rust")).toBeInTheDocument();
+      expect(screen.getByText("Go")).toBeInTheDocument();
+      expect(screen.getAllByText("Python").length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  it("executes semantic search query and displays retrieved code chunks", async () => {
     const user = userEvent.setup();
     vi.spyOn(indexingModule, "fetchRepositoryIntelligence").mockResolvedValue(mockIntelligence);
+    vi.spyOn(indexingModule, "fetchSemanticIndexStatus").mockResolvedValue({
+      repository_id: "repo-1",
+      snapshot_id: "snap-1",
+      provider_name: "fastembed",
+      model_name: "sentence-transformers/all-MiniLM-L6-v2",
+      dimension: 384,
+      total_chunks: 12,
+      status: "completed",
+    });
+    vi.spyOn(indexingModule, "executeSemanticSearch").mockResolvedValue({
+      repository_id: "repo-1",
+      query: "Where is user authentication handled?",
+      total_results: 1,
+      results: [
+        {
+          chunk_id: "chunk-1",
+          repository_id: "repo-1",
+          repository_name: "orchestrix-core",
+          snapshot_id: "snap-1",
+          file_path: "backend/app/api/v1/auth.py",
+          language: "Python",
+          symbol_name: "google_oauth_callback",
+          symbol_type: "function",
+          parent_symbol_name: null,
+          start_line: 25,
+          end_line: 55,
+          source_code_excerpt: "async def google_oauth_callback(code: str): ...",
+          similarity_score: 0.94,
+          vector_score: 0.92,
+          lexical_score: 0.95,
+          symbol_score: 0.90,
+          metadata: {},
+        },
+      ],
+    });
 
     render(<RepositoriesPage />);
 
@@ -266,19 +330,27 @@ describe("Repository Intelligence & Indexing Integration", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("repository-intelligence-modal")).toBeInTheDocument();
-      expect(screen.getByText("FastAPI")).toBeInTheDocument();
-      expect(screen.getByText("React")).toBeInTheDocument();
-      expect(screen.getByText("Next.js")).toBeInTheDocument();
     });
 
-    // Switch to Registry tab
-    await user.click(screen.getByRole("button", { name: /Registry/i }));
+    // Switch to Semantic Search tab
+    await user.click(screen.getByTestId("tab-semantic-search"));
 
     await waitFor(() => {
-      expect(screen.getByText(/Universal Parser Registry/i)).toBeInTheDocument();
-      expect(screen.getByText("Rust")).toBeInTheDocument();
-      expect(screen.getByText("Go")).toBeInTheDocument();
-      expect(screen.getAllByText("Python").length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByTestId("semantic-search-panel")).toBeInTheDocument();
+      expect(screen.getByText(/12 Chunks Indexed/i)).toBeInTheDocument();
+    });
+
+    // Enter query and search
+    const searchInput = screen.getByTestId("semantic-search-input");
+    await user.type(searchInput, "Where is user authentication handled?");
+    await user.click(screen.getByTestId("semantic-search-button"));
+
+    // Verify results displayed
+    await waitFor(() => {
+      expect(screen.getByTestId("semantic-results-list")).toBeInTheDocument();
+      expect(screen.getByText("backend/app/api/v1/auth.py")).toBeInTheDocument();
+      expect(screen.getByText("94% Match")).toBeInTheDocument();
+      expect(screen.getByText(/async def google_oauth_callback/i)).toBeInTheDocument();
     });
   });
 });
