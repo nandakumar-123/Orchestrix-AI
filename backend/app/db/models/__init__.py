@@ -12,6 +12,7 @@ from app.db.models.auth_session import AuthSession
 from app.db.models.engineering_task import EngineeringTask
 from app.db.models.github_account import GitHubAccount
 from app.db.models.github_installation import GitHubInstallation
+from app.db.models.github_oauth_transaction import GitHubOAuthTransaction
 from app.db.models.membership import WorkspaceMembership
 from app.db.models.oauth_transaction import OAuthTransaction
 from app.db.models.pull_request import PullRequestRecord
@@ -33,6 +34,7 @@ __all__ = [
     "WorkspaceMembership",
     "GitHubAccount",
     "GitHubInstallation",
+    "GitHubOAuthTransaction",
     "Repository",
     "RepositoryMember",
     "EngineeringTask",

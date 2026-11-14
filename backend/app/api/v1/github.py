@@ -7,7 +7,12 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import enforce_csrf_protection, get_current_user
+from app.api.deps import (
+    enforce_csrf_protection,
+    get_current_user,
+    get_current_user_optional,
+    require_workspace_membership,
+)
 from app.api.v1.schemas import (
     ConnectRepositoryPayload,
     GitHubConnectUrlResponse,
@@ -18,17 +23,20 @@ from app.api.v1.schemas import (
     RepositoryResponse,
 )
 from app.core.config import settings
+from app.db.base import WorkspaceRole
+from app.db.models.membership import WorkspaceMembership
 from app.db.models.repository import Repository
 from app.db.models.user import User
 from app.db.session import get_db_session
 from app.services.github import (
     connect_workspace_repository,
+    consume_github_oauth_transaction,
+    create_github_oauth_transaction,
     decrypt_token,
     disconnect_github_account,
     disconnect_workspace_repository,
     exchange_github_code,
     fetch_github_user_profile,
-    generate_github_auth_url,
     get_user_github_account,
     list_accessible_repositories,
     refresh_workspace_repository,
@@ -58,17 +66,26 @@ security_logger = logging.getLogger("orchestrix.security")
 )
 async def github_connect(
     request: Request,
+    response: Response,
     redirect: bool = Query(
         default=True, description="Whether to redirect directly or return JSON URL"
     ),
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
 ) -> Any:
     """
     Initiate GitHub OAuth connection for the authenticated user.
-    Generates an HMAC-signed state parameter bound to current_user.id.
+    Generates a server-side transaction, binds it to an HttpOnly cookie and current_user.id.
     """
     try:
-        auth_url, state = generate_github_auth_url(user_id=current_user.id)
+        ip_addr = request.client.host if request.client else None
+        user_agent = request.headers.get("user-agent")
+        _trx, browser_secret, state, auth_url = await create_github_oauth_transaction(
+            db=db,
+            user_id=current_user.id,
+            ip_address=ip_addr,
+            user_agent=user_agent,
+        )
     except ValueError as exc:
         security_logger.error("security_event=github_connect_unconfigured error=%s", str(exc))
         raise HTTPException(
@@ -77,11 +94,30 @@ async def github_connect(
         ) from exc
 
     if redirect:
-        return RedirectResponse(
+        redirect_res = RedirectResponse(
             url=auth_url,
             status_code=status.HTTP_307_TEMPORARY_REDIRECT,
         )
+        redirect_res.set_cookie(
+            key=settings.GITHUB_OAUTH_TRX_COOKIE_NAME,
+            value=browser_secret,
+            max_age=600,
+            httponly=True,
+            samesite="lax",
+            secure=settings.APP_ENV != "development",
+            path="/",
+        )
+        return redirect_res
 
+    response.set_cookie(
+        key=settings.GITHUB_OAUTH_TRX_COOKIE_NAME,
+        value=browser_secret,
+        max_age=600,
+        httponly=True,
+        samesite="lax",
+        secure=settings.APP_ENV != "development",
+        path="/",
+    )
     return GitHubConnectUrlResponse(auth_url=auth_url, state=state)
 
 
@@ -93,28 +129,35 @@ async def github_connect(
     },
 )
 async def github_callback(
+    request: Request,
     code: str | None = None,
     state: str | None = None,
     error: str | None = None,
     error_description: str | None = None,
+    current_user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db_session),
 ) -> Response:
     """
     Handle GitHub OAuth callback:
+    - Enforces browser-session binding via GITHUB_OAUTH_TRX_COOKIE_NAME.
+    - Requires active authenticated user in browser session (SEC-01).
     - Validates HMAC signature, expiration, and user authenticity of state.
+    - Atomically consumes one-time server transaction to prevent replay attacks (SEC-04).
     - Exchanges code for access token.
-    - Fetches GitHub user profile.
     - Stores encrypted token in github_accounts table.
-    - Redirects user back to frontend repositories page with status.
+    - Clears transaction cookie and redirects user back to frontend with status.
     """
     frontend_url = settings.GITHUB_FRONTEND_URL
 
     def _redirect_with_param(param_str: str) -> RedirectResponse:
         delimiter = "&" if "?" in frontend_url else "?"
-        return RedirectResponse(
+        res = RedirectResponse(
             url=f"{frontend_url}{delimiter}{param_str}",
             status_code=status.HTTP_302_FOUND,
         )
+        # Always clean up one-time transaction cookie
+        res.delete_cookie(key=settings.GITHUB_OAUTH_TRX_COOKIE_NAME, path="/")
+        return res
 
     # 1. Check for provider error
     if error:
@@ -123,30 +166,49 @@ async def github_callback(
         )
         return _redirect_with_param(f"github_error={error}")
 
-    if not code or not state:
+    browser_secret = request.cookies.get(settings.GITHUB_OAUTH_TRX_COOKIE_NAME)
+    if not code or not state or not browser_secret:
         security_logger.warning("security_event=github_callback_missing_params")
         return _redirect_with_param("github_error=missing_oauth_params")
 
-    # 2. Verify state signature and decode user_id
-    user_id = verify_github_oauth_state(state)
-    if not user_id:
-        security_logger.warning("security_event=github_callback_invalid_state")
-        return _redirect_with_param("github_error=invalid_oauth_state")
+    # 2. Enforce active authenticated Orchestrix session
+    if current_user is None:
+        security_logger.warning("security_event=github_callback_unauthenticated")
+        return _redirect_with_param("github_error=unauthenticated")
 
-    # 3. Exchange code for access token
+    # 3. Verify state signature and strictly bind to current_user.id
+    state_user_id = verify_github_oauth_state(state, expected_user_id=current_user.id)
+    if not state_user_id:
+        security_logger.warning("security_event=github_callback_user_mismatch_or_invalid_state")
+        return _redirect_with_param("github_error=user_mismatch")
+
+    # 4. Atomically consume server-side transaction with replay protection
+    trx, trx_error = await consume_github_oauth_transaction(
+        db=db,
+        browser_secret=browser_secret,
+        state=state,
+        expected_user_id=current_user.id,
+    )
+    if trx_error or trx is None:
+        security_logger.warning(
+            "security_event=github_callback_transaction_failed error=%s", trx_error
+        )
+        return _redirect_with_param(f"github_error={trx_error or 'invalid_transaction'}")
+
+    # 5. Exchange code for access token
     try:
         token_data = await exchange_github_code(code)
         access_token = token_data["access_token"]
         token_type = token_data.get("token_type", "bearer")
         scope = token_data.get("scope")
 
-        # 4. Fetch GitHub user profile
+        # 6. Fetch GitHub user profile
         profile = await fetch_github_user_profile(access_token)
 
-        # 5. Persist encrypted credentials to database
+        # 7. Persist encrypted credentials to database
         await upsert_github_account(
             db=db,
-            user_id=user_id,
+            user_id=trx.user_id,
             profile=profile,
             access_token=access_token,
             token_type=token_type,
@@ -156,7 +218,8 @@ async def github_callback(
         security_logger.error("security_event=github_callback_failure error=%s", str(exc))
         return _redirect_with_param("github_error=connection_failed")
 
-    return _redirect_with_param("github=connected")
+    login = profile.get("login", "")
+    return _redirect_with_param(f"github=connected&login={login}")
 
 
 @github_router.get(
@@ -223,6 +286,7 @@ async def list_github_repositories(
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=30, ge=1, le=100),
     current_user: User = Depends(get_current_user),
+    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.VIEWER)),
     db: AsyncSession = Depends(get_db_session),
 ) -> GitHubRepositoryListResponse:
     """

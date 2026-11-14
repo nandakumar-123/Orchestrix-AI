@@ -22,8 +22,31 @@ describe("RepositoriesPage Integration", () => {
     ],
   };
 
+  const mockMultiWorkspaceUser: authModule.CurrentUser = {
+    id: "usr-123",
+    email: "lead@orchestrix.ai",
+    full_name: "Lead Engineer",
+    avatar_url: null,
+    email_verified: true,
+    workspaces: [
+      {
+        workspace_id: "ws-123",
+        name: "Acme Production",
+        slug: "acme-prod",
+        role: "OWNER",
+      },
+      {
+        workspace_id: "ws-456",
+        name: "Beta Research",
+        slug: "beta-research",
+        role: "VIEWER",
+      },
+    ],
+  };
+
   beforeEach(() => {
     vi.restoreAllMocks();
+    window.history.pushState({}, "Test", "/repositories");
   });
 
   it("renders GitHub connection banner and disconnected state", async () => {
@@ -37,6 +60,7 @@ describe("RepositoriesPage Integration", () => {
     await waitFor(() => {
       expect(screen.getByText("Not Connected")).toBeInTheDocument();
       expect(screen.getByText("No repositories connected")).toBeInTheDocument();
+      expect(screen.getAllByText("Acme Production").length).toBeGreaterThan(0);
     });
   });
 
@@ -79,6 +103,7 @@ describe("RepositoriesPage Integration", () => {
       expect(screen.getByText("Core autonomous agent framework")).toBeInTheDocument();
       expect(screen.getByText("Python")).toBeInTheDocument();
       expect(screen.getAllByText("Connect GitHub Repository").length).toBeGreaterThan(0);
+      expect(screen.getByRole("button", { name: /Switch Account/i })).toBeInTheDocument();
     });
   });
 
@@ -154,6 +179,104 @@ describe("RepositoriesPage Integration", () => {
           full_name: "octo-engineer/agent-pipeline",
         })
       );
+    });
+  });
+
+  it("renders workspace selector for multi-workspace users and switches workspace", async () => {
+    const user = userEvent.setup();
+
+    vi.spyOn(authModule, "fetchCurrentUser").mockResolvedValue(mockMultiWorkspaceUser);
+    vi.spyOn(githubModule, "fetchGitHubStatus").mockResolvedValue({
+      connected: true,
+      github_login: "octo-engineer",
+    });
+
+    const fetchReposSpy = vi
+      .spyOn(githubModule, "fetchWorkspaceRepositories")
+      .mockResolvedValue([]);
+
+    render(<RepositoriesPage />);
+
+    // Selector should be visible
+    await waitFor(() => {
+      const select = screen.getByTestId("workspace-selector");
+      expect(select).toBeInTheDocument();
+    });
+
+    expect(fetchReposSpy).toHaveBeenCalledWith("ws-123");
+
+    // Change to "Beta Research" (ws-456, VIEWER role)
+    const select = screen.getByTestId("workspace-selector");
+    await user.selectOptions(select, "ws-456");
+
+    await waitFor(() => {
+      expect(fetchReposSpy).toHaveBeenCalledWith("ws-456");
+      // VIEWER role warning should be visible
+      expect(screen.getByText(/Read-only \(VIEWER\)/i)).toBeInTheDocument();
+    });
+
+    // Connect repository button should be disabled for VIEWER
+    const connectBtn = screen.getByRole("button", { name: /Connect GitHub Repository/i });
+    expect(connectBtn).toBeDisabled();
+  });
+
+  it("opens account switching guidance modal with clear instructions", async () => {
+    const user = userEvent.setup();
+
+    vi.spyOn(authModule, "fetchCurrentUser").mockResolvedValue(mockUser);
+    vi.spyOn(githubModule, "fetchGitHubStatus").mockResolvedValue({
+      connected: true,
+      github_login: "octo-engineer",
+    });
+    vi.spyOn(githubModule, "fetchWorkspaceRepositories").mockResolvedValue([]);
+    const disconnectSpy = vi.spyOn(githubModule, "disconnectGitHub").mockResolvedValue(true);
+
+    render(<RepositoriesPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Switch Account/i })).toBeInTheDocument();
+    });
+
+    // Open switch modal
+    await user.click(screen.getByRole("button", { name: /Switch Account/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("account-switch-modal")).toBeInTheDocument();
+      expect(screen.getByText(/GitHub browser session reuse/i)).toBeInTheDocument();
+      expect(screen.getByText(/Incognito \/ Private/i)).toBeInTheDocument();
+    });
+
+    // Click Disconnect & Reconnect
+    const actionBtn = screen.getByRole("button", {
+      name: /Disconnect & Reconnect to GitHub/i,
+    });
+    await user.click(actionBtn);
+
+    await waitFor(() => {
+      expect(disconnectSpy).toHaveBeenCalled();
+    });
+  });
+
+  it("displays account confirmation banner when returning from GitHub OAuth", async () => {
+    // Simulate OAuth callback query params: ?github=connected&login=octo-fresh
+    window.history.pushState({}, "Test", "/repositories?github=connected&login=octo-fresh");
+
+    vi.spyOn(authModule, "fetchCurrentUser").mockResolvedValue(mockUser);
+    vi.spyOn(githubModule, "fetchGitHubStatus").mockResolvedValue({
+      connected: true,
+      github_login: "octo-fresh",
+    });
+    vi.spyOn(githubModule, "fetchWorkspaceRepositories").mockResolvedValue([]);
+
+    render(<RepositoriesPage />);
+
+    await waitFor(() => {
+      const banner = screen.getByTestId("account-confirmation-banner");
+      expect(banner).toBeInTheDocument();
+      expect(screen.getAllByText(/@octo-fresh/).length).toBeGreaterThan(0);
+      expect(screen.getByText(/verify that this is the intended GitHub account/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Confirm & Continue/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Not your account\? Switch/i })).toBeInTheDocument();
     });
   });
 });

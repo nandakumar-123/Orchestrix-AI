@@ -5,11 +5,15 @@ import logging
 import secrets
 import time
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
-from sqlalchemy import select
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -17,6 +21,7 @@ from app.db.base import WorkspaceRole
 from app.db.models.audit_log import AuditLog
 from app.db.models.github_account import GitHubAccount
 from app.db.models.github_installation import GitHubInstallation
+from app.db.models.github_oauth_transaction import GitHubOAuthTransaction
 from app.db.models.membership import WorkspaceMembership
 from app.db.models.repository import Repository
 
@@ -26,31 +31,68 @@ security_logger = logging.getLogger("orchestrix.security")
 
 # -----------------------------------------------------------------------------
 # Cryptographic Token Encryption (AES-128-CBC + HMAC via Fernet)
+# Domain-separated HKDF derivation with zero-downtime legacy fallback (SEC-03)
 # -----------------------------------------------------------------------------
 
 
-def _get_fernet_cipher() -> Fernet:
-    """Derive deterministic 32-byte url-safe base64 key from SESSION_SECRET_KEY."""
+def _get_primary_fernet_cipher() -> Fernet:
+    """
+    Derive domain-separated 32-byte url-safe base64 key for GitHub tokens.
+    Priority:
+    1. Dedicated GITHUB_TOKEN_ENCRYPTION_KEY if configured on the server.
+    2. Domain-separated HKDF-SHA256 derivation from SESSION_SECRET_KEY.
+    """
+    if settings.GITHUB_TOKEN_ENCRYPTION_KEY:
+        raw_key = settings.GITHUB_TOKEN_ENCRYPTION_KEY.encode("utf-8")
+        derived_key = base64.urlsafe_b64encode(hashlib.sha256(raw_key).digest())
+        return Fernet(derived_key)
+
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b"orchestrix-github-fernet-token-encryption",
+        backend=default_backend(),
+    )
+    derived = hkdf.derive(settings.SESSION_SECRET_KEY.encode("utf-8"))
+    return Fernet(base64.urlsafe_b64encode(derived))
+
+
+def _get_legacy_fernet_cipher() -> Fernet:
+    """Legacy bare SHA-256 derived Fernet key for zero-downtime backward compatibility."""
     raw_secret = settings.SESSION_SECRET_KEY.encode("utf-8")
     derived_key = base64.urlsafe_b64encode(hashlib.sha256(raw_secret).digest())
     return Fernet(derived_key)
 
 
 def encrypt_token(plain_token: str) -> str:
-    """Encrypt plain-text access token before persisting to database."""
+    """Encrypt plain-text access token using primary domain-separated cipher."""
     if not plain_token:
         raise ValueError("Cannot encrypt an empty token")
-    cipher = _get_fernet_cipher()
+    cipher = _get_primary_fernet_cipher()
     return cipher.encrypt(plain_token.encode("utf-8")).decode("utf-8")
 
 
 def decrypt_token(cipher_text: str) -> str:
-    """Decrypt cipher-text token retrieved from database."""
+    """
+    Decrypt token using primary cipher, with seamless fallback to legacy cipher
+    to guarantee zero credential invalidation for existing encrypted tokens.
+    """
     if not cipher_text:
         raise ValueError("Cannot decrypt an empty token")
-    cipher = _get_fernet_cipher()
+
+    # 1. Try primary domain-separated cipher
+    primary_cipher = _get_primary_fernet_cipher()
     try:
-        return cipher.decrypt(cipher_text.encode("utf-8")).decode("utf-8")
+        return primary_cipher.decrypt(cipher_text.encode("utf-8")).decode("utf-8")
+    except InvalidToken:
+        # Fall through to legacy cipher
+        pass
+
+    # 2. Try legacy cipher for backward compatibility
+    legacy_cipher = _get_legacy_fernet_cipher()
+    try:
+        return legacy_cipher.decrypt(cipher_text.encode("utf-8")).decode("utf-8")
     except InvalidToken as exc:
         security_logger.error("security_event=github_token_decryption_failed")
         raise ValueError("Failed to decrypt GitHub access token") from exc
@@ -59,6 +101,11 @@ def decrypt_token(cipher_text: str) -> str:
 # -----------------------------------------------------------------------------
 # OAuth State Signing & Verification (Double-Submit / Replay Protection)
 # -----------------------------------------------------------------------------
+
+
+def hash_secret(value: str) -> str:
+    """Return SHA-256 hex digest of secret for safe database lookup."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def generate_github_oauth_state(user_id: uuid.UUID) -> str:
@@ -133,12 +180,153 @@ def verify_github_oauth_state(
 
 
 # -----------------------------------------------------------------------------
+# Server-Side OAuth Transaction Lifecycle (SEC-01 & SEC-04)
+# -----------------------------------------------------------------------------
+
+
+async def create_github_oauth_transaction(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+    redirect_uri: str | None = None,
+    scopes: str | None = None,
+) -> tuple[GitHubOAuthTransaction, str, str, str]:
+    """
+    Create and persist a server-side GitHub OAuth transaction.
+    Binds the flow to the initiating user and browser secret.
+    Returns (transaction, browser_secret, state, auth_url).
+    """
+    browser_secret = secrets.token_urlsafe(32)
+    state = generate_github_oauth_state(user_id)
+    auth_url, _ = generate_github_auth_url(
+        user_id=user_id,
+        state=state,
+        redirect_uri=redirect_uri,
+        scopes=scopes,
+    )
+
+    now = datetime.now(UTC)
+    expires_at = now + timedelta(minutes=10)
+
+    trx = GitHubOAuthTransaction(
+        user_id=user_id,
+        lookup_hash=hash_secret(browser_secret),
+        state_hash=hash_secret(state),
+        created_at=now,
+        expires_at=expires_at,
+        ip_address=ip_address,
+        user_agent=user_agent[:512] if user_agent else None,
+    )
+    db.add(trx)
+    await db.commit()
+    await db.refresh(trx)
+
+    security_logger.info(
+        "security_event=github_oauth_transaction_created user_id=%s transaction_id=%s",
+        user_id,
+        trx.id,
+    )
+    return trx, browser_secret, state, auth_url
+
+
+async def consume_github_oauth_transaction(
+    db: AsyncSession,
+    browser_secret: str | None,
+    state: str | None,
+    expected_user_id: uuid.UUID | None = None,
+) -> tuple[GitHubOAuthTransaction | None, str | None]:
+    """
+    Atomically consume a one-time GitHub OAuth transaction.
+    Enforces atomic one-time consumption (WHERE consumed_at IS NULL),
+    browser-session binding (lookup_hash), and user identity binding.
+    Returns (transaction, error_code).
+    """
+    if not browser_secret or not state:
+        return None, "missing_params"
+
+    lookup_hash = hash_secret(browser_secret)
+    state_hash = hash_secret(state)
+    now = datetime.now(UTC)
+
+    # 1. Atomic consumption with WHERE consumed_at IS NULL RETURNING
+    stmt = (
+        update(GitHubOAuthTransaction)
+        .where(
+            GitHubOAuthTransaction.lookup_hash == lookup_hash,
+            GitHubOAuthTransaction.state_hash == state_hash,
+            GitHubOAuthTransaction.consumed_at.is_(None),
+            GitHubOAuthTransaction.expires_at > now,
+        )
+        .values(consumed_at=now)
+        .returning(GitHubOAuthTransaction)
+        .execution_options(synchronize_session=False)
+    )
+    res = await db.execute(stmt)
+    trx = res.scalars().first()
+    await db.commit()
+
+    if trx is not None:
+        # Check user binding if expected_user_id is supplied
+        if expected_user_id and trx.user_id != expected_user_id:
+            security_logger.warning(
+                "security_event=github_oauth_user_mismatch trx_user=%s expected_user=%s",
+                trx.user_id,
+                expected_user_id,
+            )
+            return None, "user_mismatch"
+
+        security_logger.info(
+            "security_event=github_oauth_transaction_consumed transaction_id=%s user_id=%s",
+            trx.id,
+            trx.user_id,
+        )
+        return trx, None
+
+    # Diagnostic check for precise failure classification
+    check_stmt = select(GitHubOAuthTransaction).where(
+        GitHubOAuthTransaction.lookup_hash == lookup_hash
+    )
+    existing = (await db.execute(check_stmt)).scalars().first()
+
+    if existing is None:
+        security_logger.warning("security_event=github_oauth_transaction_not_found")
+        return None, "transaction_not_found"
+
+    if existing.consumed_at is not None:
+        security_logger.warning(
+            "security_event=github_oauth_replay_detected transaction_id=%s user_id=%s",
+            existing.id,
+            existing.user_id,
+        )
+        return None, "replay_detected"
+
+    exp = existing.expires_at
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=UTC)
+    if exp <= now:
+        security_logger.warning(
+            "security_event=github_oauth_transaction_expired transaction_id=%s", existing.id
+        )
+        return None, "expired"
+
+    if existing.state_hash != state_hash:
+        security_logger.warning(
+            "security_event=github_oauth_state_mismatch transaction_id=%s", existing.id
+        )
+        return None, "state_mismatch"
+
+    return None, "invalid_transaction"
+
+
+# -----------------------------------------------------------------------------
 # GitHub Authorization & Code Exchange
 # -----------------------------------------------------------------------------
 
 
 def generate_github_auth_url(
     user_id: uuid.UUID,
+    state: str | None = None,
     redirect_uri: str | None = None,
     scopes: str | None = None,
 ) -> tuple[str, str]:
@@ -154,17 +342,17 @@ def generate_github_auth_url(
     effective_redirect_uri = (redirect_uri or settings.GITHUB_REDIRECT_URI or "").strip()
     effective_scopes = (scopes or settings.GITHUB_SCOPES or "repo,read:user").strip()
 
-    state = generate_github_oauth_state(user_id)
+    effective_state = state or generate_github_oauth_state(user_id)
     base_url = "https://github.com/login/oauth/authorize"
     params = {
         "client_id": effective_client_id,
         "redirect_uri": effective_redirect_uri,
         "scope": effective_scopes,
-        "state": state,
+        "state": effective_state,
     }
     encoded_params = httpx.QueryParams(params)
     auth_url = f"{base_url}?{encoded_params}"
-    return auth_url, state
+    return auth_url, effective_state
 
 
 async def exchange_github_code(

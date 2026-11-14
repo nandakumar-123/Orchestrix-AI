@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     GITHUB_REDIRECT_URI: str = "http://localhost:8000/api/v1/github/callback"
     GITHUB_SCOPES: str = "repo,read:user"
     GITHUB_FRONTEND_URL: str = "http://localhost:3000/repositories"
+    GITHUB_TOKEN_ENCRYPTION_KEY: str | None = None
+    GITHUB_OAUTH_TRX_COOKIE_NAME: str = "orchestrix_gh_trx"
     GITHUB_PRIVATE_KEY_PATH: str = ""
     GITHUB_WEBHOOK_SECRET: str = ""
     GITHUB_APP_NAME: str = ""
@@ -92,6 +94,15 @@ class Settings(BaseSettings):
             if stripped:
                 return stripped
         return "http://localhost:8000/api/v1/github/callback"
+
+    @field_validator("GITHUB_TOKEN_ENCRYPTION_KEY", mode="before")
+    @classmethod
+    def validate_github_token_encryption_key(cls, value: str | None) -> str | None:
+        """Strip whitespace or return None if blank."""
+        if value is not None and isinstance(value, str):
+            stripped = value.strip()
+            return stripped if stripped else None
+        return None
 
     @property
     def allowed_origins(self) -> set[str]:

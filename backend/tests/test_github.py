@@ -8,12 +8,13 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_current_user_optional
 from app.core.config import settings
 from app.db.base import Base, WorkspaceRole
 from app.db.models import (
     GitHubAccount,
     GitHubInstallation,
+    GitHubOAuthTransaction,
     Repository,
     User,
     Workspace,
@@ -22,6 +23,8 @@ from app.db.models import (
 from app.db.session import get_db_session
 from app.main import app
 from app.services.github import (
+    _get_legacy_fernet_cipher,
+    _get_primary_fernet_cipher,
     decrypt_token,
     encrypt_token,
     generate_github_auth_url,
@@ -78,6 +81,7 @@ async def github_test_context() -> AsyncGenerator[
         await sess.refresh(membership)
 
         app.dependency_overrides[get_current_user] = lambda: user
+        app.dependency_overrides[get_current_user_optional] = lambda: user
 
     async with AsyncClient(
         transport=ASGITransport(app=app),
@@ -91,7 +95,7 @@ async def github_test_context() -> AsyncGenerator[
 
 
 # -----------------------------------------------------------------------------
-# 1. Cryptographic and State Security Unit Tests
+# 1. Cryptographic and State Security Unit Tests (SEC-03 & SEC-04)
 # -----------------------------------------------------------------------------
 
 
@@ -104,6 +108,32 @@ def test_token_encryption_and_decryption_roundtrip() -> None:
 
     decrypted = decrypt_token(encrypted)
     assert decrypted == token
+
+
+def test_token_encryption_legacy_cipher_fallback() -> None:
+    """
+    Validate that ciphertext encrypted under the legacy bare SHA-256 cipher
+    seamlessly decrypts via decrypt_token fallback (SEC-03 zero-downtime compatibility).
+    """
+    token = "gho_legacy_token_compatibility_test_123"
+    legacy_cipher = _get_legacy_fernet_cipher()
+    legacy_encrypted = legacy_cipher.encrypt(token.encode("utf-8")).decode("utf-8")
+
+    # Decrypting with primary cipher should fall back to legacy and succeed
+    assert decrypt_token(legacy_encrypted) == token
+
+
+def test_token_encryption_dedicated_key_override() -> None:
+    """Validate that setting GITHUB_TOKEN_ENCRYPTION_KEY overrides HKDF derivation."""
+    token = "gho_dedicated_key_token"
+    original_key = settings.GITHUB_TOKEN_ENCRYPTION_KEY
+    try:
+        settings.GITHUB_TOKEN_ENCRYPTION_KEY = "my_super_secret_github_encryption_key_2026"
+        cipher = _get_primary_fernet_cipher()
+        encrypted = cipher.encrypt(token.encode("utf-8")).decode("utf-8")
+        assert decrypt_token(encrypted) == token
+    finally:
+        settings.GITHUB_TOKEN_ENCRYPTION_KEY = original_key
 
 
 def test_token_encryption_is_non_deterministic() -> None:
@@ -153,7 +183,7 @@ def test_auth_url_construction() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 2. Account Connection Endpoints Tests
+# 2. Account Connection Endpoints Tests (SEC-01 & SEC-04)
 # -----------------------------------------------------------------------------
 
 
@@ -163,14 +193,15 @@ async def test_github_connect_redirect_and_json(
         AsyncClient, async_sessionmaker[AsyncSession], User, Workspace, WorkspaceMembership
     ],
 ) -> None:
-    """Test GET /api/v1/github/connect redirect and JSON modes."""
-    client, _, user, _, _ = github_test_context
+    """Test GET /api/v1/github/connect redirect and JSON modes, and verify transaction cookie."""
+    client, session_factory, user, _, _ = github_test_context
 
     # 1. Direct redirect mode (default)
     res_redirect = await client.get("/api/v1/github/connect?redirect=true", follow_redirects=False)
     assert res_redirect.status_code == 307
     location = res_redirect.headers.get("location", "")
     assert "https://github.com/login/oauth/authorize" in location
+    assert settings.GITHUB_OAUTH_TRX_COOKIE_NAME in res_redirect.cookies
 
     # 2. JSON mode
     res_json = await client.get("/api/v1/github/connect?redirect=false")
@@ -178,6 +209,13 @@ async def test_github_connect_redirect_and_json(
     data = res_json.json()
     assert "auth_url" in data
     assert "https://github.com/login/oauth/authorize" in data["auth_url"]
+    assert settings.GITHUB_OAUTH_TRX_COOKIE_NAME in res_json.cookies
+
+    # Verify server-side transaction stored in database
+    async with session_factory() as sess:
+        stmt = select(GitHubOAuthTransaction).where(GitHubOAuthTransaction.user_id == user.id)
+        trxs = (await sess.execute(stmt)).scalars().all()
+        assert len(trxs) >= 2
 
 
 @pytest.mark.asyncio
@@ -186,9 +224,13 @@ async def test_github_callback_success(
         AsyncClient, async_sessionmaker[AsyncSession], User, Workspace, WorkspaceMembership
     ],
 ) -> None:
-    """Test successful GitHub OAuth callback code exchange and account linking."""
+    """Test successful GitHub OAuth callback code exchange with session binding."""
     client, session_factory, user, _, _ = github_test_context
-    valid_state = generate_github_oauth_state(user.id)
+
+    # 1. Initiate connect to get state and browser cookie
+    init_res = await client.get("/api/v1/github/connect?redirect=false")
+    assert init_res.status_code == 200
+    state = init_res.json()["state"]
 
     mock_profile = {
         "id": 1234567,
@@ -210,12 +252,14 @@ async def test_github_callback_success(
         }
         mock_user.return_value = mock_profile
 
+        # 2. Execute callback with valid state and browser cookie
         res = await client.get(
-            f"/api/v1/github/callback?code=mock_code_xyz&state={valid_state}",
+            f"/api/v1/github/callback?code=mock_code_xyz&state={state}",
             follow_redirects=False,
         )
         assert res.status_code == 302
         assert "github=connected" in res.headers["location"]
+        assert "login=octocat" in res.headers["location"]
 
     # Verify database persistence
     async with session_factory() as sess:
@@ -227,23 +271,116 @@ async def test_github_callback_success(
         assert account.github_user_id == 1234567
         assert decrypt_token(account.encrypted_access_token) == "gho_mock_access_token_123"
 
+        # Verify transaction is atomically consumed
+        trx_stmt = select(GitHubOAuthTransaction).where(GitHubOAuthTransaction.user_id == user.id)
+        trx = (await sess.execute(trx_stmt)).scalars().first()
+        assert trx is not None
+        assert trx.consumed_at is not None
+
 
 @pytest.mark.asyncio
-async def test_github_callback_tampered_state(
+async def test_github_callback_missing_browser_cookie_rejected(
     github_test_context: tuple[
         AsyncClient, async_sessionmaker[AsyncSession], User, Workspace, WorkspaceMembership
     ],
 ) -> None:
-    """Test callback rejection with invalid state."""
+    """Validate that callback without the browser transaction cookie is rejected (SEC-01)."""
     client, _, user, _, _ = github_test_context
-    tampered_state = "invalid_tampered_state_token"
+    state = generate_github_oauth_state(user.id)
 
+    # Call callback without calling connect first (no cookie)
     res = await client.get(
-        f"/api/v1/github/callback?code=mock_code&state={tampered_state}",
+        f"/api/v1/github/callback?code=mock_code&state={state}",
         follow_redirects=False,
     )
     assert res.status_code == 302
-    assert "github_error=invalid_oauth_state" in res.headers["location"]
+    assert "github_error=missing_oauth_params" in res.headers["location"]
+
+
+@pytest.mark.asyncio
+async def test_github_callback_replay_rejected(
+    github_test_context: tuple[
+        AsyncClient, async_sessionmaker[AsyncSession], User, Workspace, WorkspaceMembership
+    ],
+) -> None:
+    """Validate that replaying the same callback request a second time is rejected (SEC-04)."""
+    client, _, user, _, _ = github_test_context
+
+    init_res = await client.get("/api/v1/github/connect?redirect=false")
+    state = init_res.json()["state"]
+    cookie_val = client.cookies.get(settings.GITHUB_OAUTH_TRX_COOKIE_NAME)
+    assert cookie_val is not None
+
+    mock_profile = {
+        "id": 1234567,
+        "login": "octocat",
+    }
+
+    with (
+        patch("app.api.v1.github.exchange_github_code", new_callable=AsyncMock) as mock_exchange,
+        patch("app.api.v1.github.fetch_github_user_profile", new_callable=AsyncMock) as mock_user,
+    ):
+        mock_exchange.return_value = {
+            "access_token": "gho_test_123",
+            "token_type": "bearer",
+            "scope": "repo",
+        }
+        mock_user.return_value = mock_profile
+
+        # 1. First attempt: succeeds
+        res1 = await client.get(
+            f"/api/v1/github/callback?code=mock_code_xyz&state={state}",
+            follow_redirects=False,
+        )
+        assert res1.status_code == 302
+        assert "github=connected" in res1.headers["location"]
+
+        # 2. Replay attempt with same cookie & state: MUST be rejected with replay_detected
+        client.cookies.set(settings.GITHUB_OAUTH_TRX_COOKIE_NAME, cookie_val)
+        res2 = await client.get(
+            f"/api/v1/github/callback?code=mock_code_xyz&state={state}",
+            follow_redirects=False,
+        )
+        assert res2.status_code == 302
+        assert "github_error=replay_detected" in res2.headers["location"]
+
+
+@pytest.mark.asyncio
+async def test_github_callback_cross_user_rejection(
+    github_test_context: tuple[
+        AsyncClient, async_sessionmaker[AsyncSession], User, Workspace, WorkspaceMembership
+    ],
+) -> None:
+    """Validate that User B cannot consume User A's OAuth transaction (SEC-01)."""
+    client, session_factory, user_a, ws, _ = github_test_context
+
+    # Create User B
+    async with session_factory() as sess:
+        user_b = User(
+            id=uuid.uuid4(),
+            email="victim@example.com",
+            full_name="Victim User",
+            is_active=True,
+        )
+        sess.add(user_b)
+        await sess.commit()
+
+    # 1. User A initiates OAuth flow
+    init_res = await client.get("/api/v1/github/connect?redirect=false")
+    state_a = init_res.json()["state"]
+
+    # 2. Switch session to User B
+    app.dependency_overrides[get_current_user] = lambda: user_b
+    app.dependency_overrides[get_current_user_optional] = lambda: user_b
+
+    # 3. User B tries to redeem User A's callback state -> MUST reject with user_mismatch or invalid_oauth_state
+    res = await client.get(
+        f"/api/v1/github/callback?code=code_abc&state={state_a}",
+        follow_redirects=False,
+    )
+    assert res.status_code == 302
+    loc = res.headers["location"]
+    assert "invalid_oauth_state" in loc or "user_mismatch" in loc
 
 
 @pytest.mark.asyncio
@@ -298,8 +435,35 @@ async def test_github_status_and_disconnect(
 
 
 # -----------------------------------------------------------------------------
-# 3. Repository Discovery and Connection Tests
+# 3. Repository Discovery and Tenant Isolation Tests (SEC-02)
 # -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_accessible_repositories_tenant_isolation_forbidden(
+    github_test_context: tuple[
+        AsyncClient, async_sessionmaker[AsyncSession], User, Workspace, WorkspaceMembership
+    ],
+) -> None:
+    """Validate that querying repositories for a workspace user is not a member of fails with 403 (SEC-02)."""
+    client, session_factory, user, _, _ = github_test_context
+    unauthorized_ws_id = uuid.uuid4()
+
+    # Seed connected GitHub account
+    async with session_factory() as sess:
+        acct = GitHubAccount(
+            user_id=user.id,
+            github_user_id=555,
+            github_login="developer",
+            encrypted_access_token=encrypt_token("gho_token_555"),
+        )
+        sess.add(acct)
+        await sess.commit()
+
+    # Query with unauthorized_ws_id -> MUST return 403 Forbidden
+    res = await client.get(f"/api/v1/github/repositories?workspace_id={unauthorized_ws_id}")
+    assert res.status_code == 403
+    assert "not a member" in res.json()["detail"].lower()
 
 
 @pytest.mark.asyncio

@@ -26,6 +26,8 @@ import {
   GitFork,
   ShieldCheck,
   Loader2,
+  Building2,
+  ArrowRightLeft,
 } from "lucide-react";
 
 function GitHubIcon({ className = "h-4 w-4" }: { className?: string }) {
@@ -58,13 +60,15 @@ import {
 
 export default function RepositoriesPage() {
   const [currentUser, setCurrentUser] = React.useState<CurrentUser | null>(null);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = React.useState<string | null>(null);
   const [githubStatus, setGithubStatus] = React.useState<GitHubStatus>({ connected: false });
   const [repositories, setRepositories] = React.useState<WorkspaceRepository[]>([]);
   const [accessibleRepos, setAccessibleRepos] = React.useState<AccessibleGitHubRepo[]>([]);
-  
+
   const [loading, setLoading] = React.useState(true);
   const [loadingModal, setLoadingModal] = React.useState(false);
   const [isModalOpen, setIsModalOpen] = React.useState(false);
+  const [isSwitchModalOpen, setIsSwitchModalOpen] = React.useState(false);
   const [actionLoadingId, setActionLoadingId] = React.useState<string | null>(null);
   const [connectingRepoId, setConnectingRepoId] = React.useState<number | null>(null);
 
@@ -74,9 +78,20 @@ export default function RepositoriesPage() {
     type: "success" | "error" | "info";
     message: string;
   } | null>(null);
+  const [accountConfirmation, setAccountConfirmation] = React.useState<{
+    login: string | null;
+  } | null>(null);
 
-  // Active workspace (first workspace user belongs to)
-  const activeWorkspace = currentUser?.workspaces?.[0] || null;
+  // Active workspace (derived from selectedWorkspaceId or first workspace)
+  const activeWorkspace = React.useMemo(() => {
+    if (!currentUser?.workspaces || currentUser.workspaces.length === 0) return null;
+    if (selectedWorkspaceId) {
+      const found = currentUser.workspaces.find((w) => w.workspace_id === selectedWorkspaceId);
+      if (found) return found;
+    }
+    return currentUser.workspaces[0];
+  }, [currentUser, selectedWorkspaceId]);
+
   const isWorkspaceAdminOrOwner =
     activeWorkspace?.role === "OWNER" || activeWorkspace?.role === "ADMIN";
 
@@ -85,12 +100,14 @@ export default function RepositoriesPage() {
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
       const gh = params.get("github");
+      const login = params.get("login");
       const ghErr = params.get("github_error");
       if (gh === "connected") {
         queueMicrotask(() => {
+          setAccountConfirmation({ login });
           setNotification({
             type: "success",
-            message: "GitHub account connected successfully! You can now import repositories.",
+            message: `GitHub account connected successfully as @${login || "user"}!`,
           });
         });
         window.history.replaceState({}, document.title, window.location.pathname);
@@ -116,17 +133,18 @@ export default function RepositoriesPage() {
         if (!isMounted) return;
         setCurrentUser(user);
 
-        const ghStatus = await fetchGitHubStatus();
-        if (!isMounted) return;
-        setGithubStatus(ghStatus);
-
         if (user && user.workspaces && user.workspaces.length > 0) {
-          const wsId = user.workspaces[0].workspace_id;
-          const repos = await fetchWorkspaceRepositories(wsId);
+          const initialWsId = user.workspaces[0].workspace_id;
+          setSelectedWorkspaceId(initialWsId);
+          const repos = await fetchWorkspaceRepositories(initialWsId);
           if (isMounted) {
             setRepositories(repos);
           }
         }
+
+        const ghStatus = await fetchGitHubStatus();
+        if (!isMounted) return;
+        setGithubStatus(ghStatus);
       } catch {
         if (isMounted) {
           setNotification({
@@ -147,6 +165,23 @@ export default function RepositoriesPage() {
       isMounted = false;
     };
   }, []);
+
+  // Handle workspace change from dropdown
+  const handleWorkspaceChange = async (newWorkspaceId: string) => {
+    setSelectedWorkspaceId(newWorkspaceId);
+    setLoading(true);
+    try {
+      const repos = await fetchWorkspaceRepositories(newWorkspaceId);
+      setRepositories(repos);
+    } catch {
+      setNotification({
+        type: "error",
+        message: "Failed to load repositories for selected workspace.",
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Open Connect Repository Drawer / Modal
   const handleOpenConnectModal = async () => {
@@ -356,6 +391,51 @@ export default function RepositoriesPage() {
         }
       />
 
+      {/* Account Confirmation Banner (shown when returning from GitHub OAuth) */}
+      {accountConfirmation && (
+        <div
+          data-testid="account-confirmation-banner"
+          className="p-4 rounded-xl border border-blue-200 bg-blue-50/90 text-blue-900 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-in fade-in"
+        >
+          <div className="flex items-start sm:items-center gap-3">
+            <div className="h-8 w-8 rounded-full bg-blue-600 text-white flex items-center justify-center shrink-0">
+              <GitHubIcon className="h-4 w-4" />
+            </div>
+            <div>
+              <p className="text-xs font-semibold">
+                GitHub account connected as{" "}
+                <span className="font-bold underline">
+                  @{accountConfirmation.login || githubStatus.github_login || "user"}
+                </span>
+              </p>
+              <p className="text-[11px] text-blue-700 mt-0.5">
+                Please verify that this is the intended GitHub account for your Orchestrix workspace.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 self-end sm:self-auto">
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-xs h-7.5 bg-white border-blue-200 text-blue-700 hover:bg-blue-100"
+              onClick={() => {
+                setAccountConfirmation(null);
+                setIsSwitchModalOpen(true);
+              }}
+            >
+              Not your account? Switch
+            </Button>
+            <Button
+              size="sm"
+              className="text-xs h-7.5 bg-blue-600 hover:bg-blue-700 text-white"
+              onClick={() => setAccountConfirmation(null)}
+            >
+              Confirm & Continue
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* Notification Banner */}
       {notification && (
         <div
@@ -383,6 +463,65 @@ export default function RepositoriesPage() {
           </button>
         </div>
       )}
+
+      {/* Workspace Selector & Tenant Header */}
+      <div className="bg-white p-3.5 rounded-xl border border-slate-200/90 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <div className="h-8 w-8 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
+            <Building2 className="h-4 w-4" />
+          </div>
+          <div>
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 block">
+              Active Workspace
+            </span>
+            {currentUser && currentUser.workspaces && currentUser.workspaces.length > 1 ? (
+              <div className="flex items-center gap-2 mt-0.5">
+                <select
+                  data-testid="workspace-selector"
+                  value={selectedWorkspaceId || ""}
+                  onChange={(e) => handleWorkspaceChange(e.target.value)}
+                  className="text-xs font-semibold text-slate-900 bg-slate-50 border border-slate-300 rounded-md px-2.5 py-1 focus:outline-hidden focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                >
+                  {currentUser.workspaces.map((ws) => (
+                    <option key={ws.workspace_id} value={ws.workspace_id}>
+                      {ws.name} ({ws.role})
+                    </option>
+                  ))}
+                </select>
+                <Badge
+                  variant={isWorkspaceAdminOrOwner ? "success" : "secondary"}
+                  className="text-[10px]"
+                >
+                  {activeWorkspace?.role}
+                </Badge>
+              </div>
+            ) : activeWorkspace ? (
+              <div className="flex items-center gap-2 mt-0.5">
+                <span className="font-semibold text-sm text-slate-900">
+                  {activeWorkspace.name}
+                </span>
+                <Badge
+                  variant={isWorkspaceAdminOrOwner ? "success" : "secondary"}
+                  className="text-[10px]"
+                >
+                  {activeWorkspace.role}
+                </Badge>
+              </div>
+            ) : (
+              <span className="text-xs text-slate-500">No workspace available</span>
+            )}
+          </div>
+        </div>
+
+        {!isWorkspaceAdminOrOwner && activeWorkspace && (
+          <div className="flex items-center gap-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200/80 px-3 py-1.5 rounded-lg">
+            <AlertCircle className="h-3.5 w-3.5 shrink-0 text-amber-600" />
+            <span>
+              Read-only ({activeWorkspace.role}): Connecting repositories requires ADMIN or OWNER role.
+            </span>
+          </div>
+        )}
+      </div>
 
       {/* GitHub Connection Status Header Banner */}
       <div className="bg-white p-4 rounded-xl border border-slate-200/90 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -413,13 +552,22 @@ export default function RepositoriesPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2.5 shrink-0">
+        <div className="flex items-center gap-2.5 shrink-0 flex-wrap">
           {githubStatus.connected ? (
             <>
-              <div className="flex items-center gap-1.5 text-[11px] text-slate-500 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-md">
+              <div className="hidden sm:flex items-center gap-1.5 text-[11px] text-slate-500 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-md">
                 <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
                 <span>AES-128 Encrypted Credentials</span>
               </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsSwitchModalOpen(true)}
+                className="text-xs h-7.5 border-slate-200 text-slate-700 hover:text-blue-600 hover:border-blue-200"
+              >
+                <ArrowRightLeft className="h-3.5 w-3.5 mr-1" />
+                Switch Account
+              </Button>
               <Button
                 variant="outline"
                 size="sm"
@@ -457,7 +605,8 @@ export default function RepositoriesPage() {
         </div>
         <div className="flex items-center gap-2 text-xs text-slate-500 w-full sm:w-auto justify-end">
           <span>
-            Showing {filtered.length} of {repositories.length} connected repositories
+            Showing {filtered.length} of {repositories.length} connected repositories in{" "}
+            <strong>{activeWorkspace?.name || "workspace"}</strong>
           </span>
         </div>
       </div>
@@ -474,12 +623,20 @@ export default function RepositoriesPage() {
           title="No repositories connected"
           description={
             githubStatus.connected
-              ? "Your GitHub account is connected. Select repositories to connect them to this workspace."
+              ? isWorkspaceAdminOrOwner
+                ? `Your GitHub account is connected. Select repositories to connect them to "${
+                    activeWorkspace?.name || "this workspace"
+                  }".`
+                : `No repositories connected to "${
+                    activeWorkspace?.name || "this workspace"
+                  }". Contact a workspace Admin or Owner to connect repositories.`
               : "Connect your GitHub account to import repositories and enable Orchestrix AI agents."
           }
           actionLabel={
             githubStatus.connected
-              ? "Connect GitHub Repository"
+              ? isWorkspaceAdminOrOwner
+                ? "Connect GitHub Repository"
+                : undefined
               : "Connect GitHub Account"
           }
           onAction={
@@ -611,6 +768,91 @@ export default function RepositoriesPage() {
               </CardContent>
             </Card>
           ))}
+        </div>
+      )}
+
+      {/* Account Switching Guidance Modal */}
+      {isSwitchModalOpen && (
+        <div
+          data-testid="account-switch-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4 animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full overflow-hidden">
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="h-8 w-8 rounded-lg bg-slate-900 text-white flex items-center justify-center">
+                  <GitHubIcon className="h-4 w-4" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-900">Switch GitHub Account</h2>
+                  <p className="text-xs text-slate-500">Connect a different GitHub identity to Orchestrix</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsSwitchModalOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 text-xs text-slate-600">
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 space-y-1">
+                <div className="flex items-center gap-1.5 font-semibold text-amber-900">
+                  <AlertCircle className="h-4 w-4 shrink-0 text-amber-600" />
+                  <span>Important: GitHub browser session reuse</span>
+                </div>
+                <p className="text-[11px] leading-relaxed">
+                  GitHub OAuth 2.0 does not support account chooser prompts (such as Google&apos;s prompt parameter). GitHub will automatically authorize whatever account is currently signed in to <span className="font-mono font-semibold">github.com</span> in this browser.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <p className="font-semibold text-slate-800">To switch to a different account:</p>
+                <ol className="list-decimal list-inside space-y-1.5 text-slate-600 text-[11px] pl-1">
+                  <li>
+                    Open <a href="https://github.com" target="_blank" rel="noreferrer" className="text-blue-600 underline font-medium">github.com</a> in a new tab and <strong>sign out</strong> of your current account (or open Orchestrix in an <strong>Incognito / Private</strong> window).
+                  </li>
+                  <li>
+                    Sign in to your target GitHub account on github.com.
+                  </li>
+                  <li>
+                    Click <strong>&quot;Disconnect & Reconnect to GitHub&quot;</strong> below to authorize your target account.
+                  </li>
+                </ol>
+              </div>
+
+              <p className="text-[11px] text-slate-400 italic">
+                Note: Existing repositories already imported into your workspace will remain connected and active.
+              </p>
+            </div>
+
+            <div className="p-4 border-t border-slate-100 bg-slate-50 flex items-center justify-end gap-2.5">
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs h-8"
+                onClick={() => setIsSwitchModalOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                className="text-xs h-8 bg-slate-900 hover:bg-slate-800 text-white"
+                onClick={async () => {
+                  setIsSwitchModalOpen(false);
+                  try {
+                    await disconnectGitHub();
+                  } catch {
+                    // Ignore disconnect failure on switch
+                  }
+                  window.location.href = getGitHubConnectUrl();
+                }}
+              >
+                Disconnect & Reconnect to GitHub
+              </Button>
+            </div>
+          </div>
         </div>
       )}
 
