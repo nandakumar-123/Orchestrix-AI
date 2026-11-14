@@ -309,12 +309,30 @@ async def consume_oauth_transaction(
     return None, "invalid_transaction"
 
 
-def generate_google_auth_url(state: str, nonce: str, code_challenge: str) -> str:
-    """Construct Google OAuth 2.0 OpenID Connect authorization URL."""
+def generate_google_auth_url(
+    state: str,
+    nonce: str,
+    code_challenge: str,
+    redirect_uri: str | None = None,
+) -> str:
+    """
+    Construct Google OAuth 2.0 OpenID Connect authorization URL.
+    Validates required client_id and redirect_uri parameters.
+    """
+    effective_client_id = (settings.GOOGLE_CLIENT_ID or "").strip()
+    if not effective_client_id:
+        security_logger.error("security_event=google_oauth_missing_client_id")
+        raise ValueError("Google OAuth client_id is not configured on the server")
+
+    effective_redirect_uri = (redirect_uri or settings.GOOGLE_REDIRECT_URI or "").strip()
+    if not effective_redirect_uri:
+        security_logger.error("security_event=google_oauth_missing_redirect_uri")
+        raise ValueError("Google OAuth redirect_uri is not configured on the server")
+
     base_url = "https://accounts.google.com/o/oauth2/v2/auth"
     params = {
-        "client_id": settings.GOOGLE_CLIENT_ID,
-        "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+        "client_id": effective_client_id,
+        "redirect_uri": effective_redirect_uri,
         "response_type": "code",
         "scope": "openid email profile",
         "state": state,
@@ -328,8 +346,17 @@ def generate_google_auth_url(state: str, nonce: str, code_challenge: str) -> str
     return f"{base_url}?{encoded_params}"
 
 
-async def exchange_google_code(code: str, code_verifier: str) -> dict[str, Any]:
+async def exchange_google_code(
+    code: str,
+    code_verifier: str,
+    redirect_uri: str | None = None,
+) -> dict[str, Any]:
     """Exchange authorization code and PKCE verifier for Google tokens."""
+    effective_redirect_uri = (redirect_uri or settings.GOOGLE_REDIRECT_URI or "").strip()
+    if not effective_redirect_uri:
+        security_logger.error("security_event=google_oauth_exchange_missing_redirect_uri")
+        raise ValueError("Google OAuth redirect_uri is not configured on the server")
+
     token_url = "https://oauth2.googleapis.com/token"
     data = {
         "client_id": settings.GOOGLE_CLIENT_ID,
@@ -337,7 +364,7 @@ async def exchange_google_code(code: str, code_verifier: str) -> dict[str, Any]:
         "code": code,
         "code_verifier": code_verifier,
         "grant_type": "authorization_code",
-        "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+        "redirect_uri": effective_redirect_uri,
     }
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.post(token_url, data=data)

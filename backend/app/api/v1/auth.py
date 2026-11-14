@@ -57,11 +57,15 @@ async def google_login(
     Binds the transaction to the browser using an unguessable HttpOnly cookie secret.
     Zero raw PKCE code verifiers or nonces are exposed to the browser.
     """
-    if not settings.GOOGLE_CLIENT_ID:
-        security_logger.error("security_event=google_oauth_unconfigured")
+    if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_REDIRECT_URI:
+        security_logger.error(
+            "security_event=google_oauth_unconfigured missing_client_id=%s missing_redirect_uri=%s",
+            not bool(settings.GOOGLE_CLIENT_ID),
+            not bool(settings.GOOGLE_REDIRECT_URI),
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Google OAuth is not configured on the server",
+            detail="Google OAuth is not configured on the server: missing client_id or redirect_uri",
         )
 
     client_ip = request.client.host if request.client else None
@@ -73,11 +77,19 @@ async def google_login(
         user_agent=user_agent,
     )
 
-    auth_url = generate_google_auth_url(
-        state=state,
-        nonce=trx.nonce,
-        code_challenge=code_challenge,
-    )
+    try:
+        auth_url = generate_google_auth_url(
+            state=state,
+            nonce=trx.nonce,
+            code_challenge=code_challenge,
+            redirect_uri=settings.GOOGLE_REDIRECT_URI,
+        )
+    except ValueError as exc:
+        security_logger.error("security_event=google_auth_url_generation_failed error=%s", str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate Google OAuth URL: {exc}",
+        ) from exc
 
     redirect = RedirectResponse(
         url=auth_url,
@@ -150,7 +162,11 @@ async def google_callback(
         return _error_redirect(err_reason or "invalid_oauth_state")
 
     try:
-        token_response = await exchange_google_code(code, trx.code_verifier)
+        token_response = await exchange_google_code(
+            code=code,
+            code_verifier=trx.code_verifier,
+            redirect_uri=settings.GOOGLE_REDIRECT_URI,
+        )
         id_token = token_response.get("id_token")
         if not id_token:
             raise ValueError("No id_token received in Google response")

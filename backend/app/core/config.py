@@ -1,6 +1,7 @@
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -68,6 +69,16 @@ class Settings(BaseSettings):
     FRONTEND_ORIGIN: str = "http://localhost:3000"
     CSRF_COOKIE_NAME: str = "orchestrix_csrf"
     OAUTH_TRX_COOKIE_NAME: str = "orchestrix_oauth_trx"
+
+    @field_validator("GOOGLE_REDIRECT_URI", mode="before")
+    @classmethod
+    def validate_google_redirect_uri(cls, value: str | None) -> str:
+        """Ensure GOOGLE_REDIRECT_URI is stripped, non-empty, and falls back to default if blank."""
+        if value is not None and isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped
+        return "http://localhost:8000/auth/google/callback"
 
     @property
     def allowed_origins(self) -> set[str]:

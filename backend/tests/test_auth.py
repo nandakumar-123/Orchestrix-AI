@@ -1,6 +1,7 @@
 import uuid
 from collections.abc import AsyncGenerator
 from unittest.mock import patch
+from urllib.parse import parse_qsl, urlsplit
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -23,7 +24,9 @@ from app.services.auth import (
     consume_oauth_transaction,
     create_auth_session,
     create_oauth_transaction,
+    exchange_google_code,
     generate_csrf_token,
+    generate_google_auth_url,
     hash_secret,
     provision_or_get_google_user,
     validate_session_token,
@@ -120,10 +123,13 @@ async def test_session_lifecycle_and_throttling(
 async def test_google_login_redirect_creates_server_transaction(
     auth_test_context: tuple[AsyncClient, async_sessionmaker[AsyncSession]],
 ) -> None:
-    """Test GET /auth/google/login stores transaction in DB and sets unguessable cookie."""
+    """Test GET /auth/google/login stores transaction in DB, includes redirect_uri, and sets unguessable cookie."""
     client, session_factory = auth_test_context
 
-    with patch.object(settings, "GOOGLE_CLIENT_ID", "test-google-client-id"):
+    with (
+        patch.object(settings, "GOOGLE_CLIENT_ID", "test-google-client-id"),
+        patch.object(settings, "GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/google/callback"),
+    ):
         response = await client.get("/auth/google/login", follow_redirects=False)
         assert response.status_code == 307
         assert "location" in response.headers
@@ -133,6 +139,13 @@ async def test_google_login_redirect_creates_server_transaction(
         assert "code_challenge_method=S256" in location
         assert "state=" in location
         assert "nonce=" in location
+        assert "redirect_uri=" in location
+
+        # Verify decoded redirect_uri exactly matches the configured callback URL
+        parsed = urlsplit(location)
+        query_params = dict(parse_qsl(parsed.query))
+        assert "redirect_uri" in query_params
+        assert query_params["redirect_uri"] == "http://localhost:8000/auth/google/callback"
 
         # Verify browser received only random secret cookie (no verifier/nonce)
         assert OAUTH_TRX_COOKIE_NAME in response.cookies
@@ -147,6 +160,97 @@ async def test_google_login_redirect_creates_server_transaction(
         assert trx is not None
         assert trx.consumed_at is None
         assert trx.code_verifier is not None
+
+
+def test_google_auth_url_redirect_uri_verification_and_validation() -> None:
+    """Test generate_google_auth_url encodes redirect_uri and enforces required configuration."""
+    # 1. Valid generation with default settings includes properly encoded redirect_uri
+    with (
+        patch.object(settings, "GOOGLE_CLIENT_ID", "mock-client-id.apps.googleusercontent.com"),
+        patch.object(settings, "GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/google/callback"),
+    ):
+        url = generate_google_auth_url(
+            state="mock_state",
+            nonce="mock_nonce",
+            code_challenge="mock_challenge",
+        )
+        assert "redirect_uri=" in url
+        parsed = urlsplit(url)
+        params = dict(parse_qsl(parsed.query))
+        assert params["redirect_uri"] == "http://localhost:8000/auth/google/callback"
+        assert params["client_id"] == "mock-client-id.apps.googleusercontent.com"
+        assert params["response_type"] == "code"
+
+    # 2. Explicit redirect_uri override is respected and correctly encoded
+    custom_uri = "https://app.orchestrix.ai/auth/google/callback"
+    with patch.object(settings, "GOOGLE_CLIENT_ID", "mock-client-id"):
+        url_custom = generate_google_auth_url(
+            state="mock_state",
+            nonce="mock_nonce",
+            code_challenge="mock_challenge",
+            redirect_uri=custom_uri,
+        )
+        parsed_custom = urlsplit(url_custom)
+        params_custom = dict(parse_qsl(parsed_custom.query))
+        assert params_custom["redirect_uri"] == custom_uri
+
+    # 3. Missing or empty redirect_uri raises a clear ValueError instead of silent omission
+    with (
+        patch.object(settings, "GOOGLE_CLIENT_ID", "mock-client-id"),
+        patch.object(settings, "GOOGLE_REDIRECT_URI", ""),
+    ):
+        with pytest.raises(ValueError, match="Google OAuth redirect_uri is not configured"):
+            generate_google_auth_url(
+                state="mock_state",
+                nonce="mock_nonce",
+                code_challenge="mock_challenge",
+            )
+
+    # 4. Missing or empty client_id raises a clear ValueError
+    with (
+        patch.object(settings, "GOOGLE_CLIENT_ID", ""),
+        patch.object(settings, "GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/google/callback"),
+    ):
+        with pytest.raises(ValueError, match="Google OAuth client_id is not configured"):
+            generate_google_auth_url(
+                state="mock_state",
+                nonce="mock_nonce",
+                code_challenge="mock_challenge",
+            )
+
+
+@pytest.mark.asyncio
+async def test_google_login_endpoint_unconfigured_error(
+    auth_test_context: tuple[AsyncClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    """Test GET /auth/google/login fails fast with 500 when configuration is incomplete."""
+    client, _ = auth_test_context
+
+    # 1. Missing GOOGLE_CLIENT_ID
+    with (
+        patch.object(settings, "GOOGLE_CLIENT_ID", ""),
+        patch.object(settings, "GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/google/callback"),
+    ):
+        res1 = await client.get("/auth/google/login", follow_redirects=False)
+        assert res1.status_code == 500
+        assert "not configured" in res1.json()["detail"]
+
+    # 2. Missing GOOGLE_REDIRECT_URI
+    with (
+        patch.object(settings, "GOOGLE_CLIENT_ID", "test-client-id"),
+        patch.object(settings, "GOOGLE_REDIRECT_URI", ""),
+    ):
+        res2 = await client.get("/auth/google/login", follow_redirects=False)
+        assert res2.status_code == 500
+        assert "missing client_id or redirect_uri" in res2.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_google_token_exchange_missing_redirect_uri() -> None:
+    """Test exchange_google_code enforces non-empty redirect_uri configuration."""
+    with patch.object(settings, "GOOGLE_REDIRECT_URI", ""):
+        with pytest.raises(ValueError, match="Google OAuth redirect_uri is not configured"):
+            await exchange_google_code("mock_code", "mock_verifier")
 
 
 @pytest.mark.asyncio
