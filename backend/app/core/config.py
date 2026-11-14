@@ -22,10 +22,13 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
 
-    # GitHub App configuration (optional at initial foundation stage)
+    # GitHub App & OAuth configuration
     GITHUB_APP_ID: str = ""
     GITHUB_CLIENT_ID: str = ""
     GITHUB_CLIENT_SECRET: str = ""
+    GITHUB_REDIRECT_URI: str = "http://localhost:8000/api/v1/github/callback"
+    GITHUB_SCOPES: str = "repo,read:user"
+    GITHUB_FRONTEND_URL: str = "http://localhost:3000/repositories"
     GITHUB_PRIVATE_KEY_PATH: str = ""
     GITHUB_WEBHOOK_SECRET: str = ""
     GITHUB_APP_NAME: str = ""
@@ -80,6 +83,16 @@ class Settings(BaseSettings):
                 return stripped
         return "http://localhost:8000/auth/google/callback"
 
+    @field_validator("GITHUB_REDIRECT_URI", mode="before")
+    @classmethod
+    def validate_github_redirect_uri(cls, value: str | None) -> str:
+        """Ensure GITHUB_REDIRECT_URI is stripped, non-empty, and falls back to default if blank."""
+        if value is not None and isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped
+        return "http://localhost:8000/api/v1/github/callback"
+
     @property
     def allowed_origins(self) -> set[str]:
         """Return normalized set of allowed frontend origins without trailing slashes."""
@@ -88,6 +101,11 @@ class Settings(BaseSettings):
             origins.add(self.FRONTEND_ORIGIN.rstrip("/"))
         if self.GOOGLE_FRONTEND_URL:
             origins.add(self.GOOGLE_FRONTEND_URL.rstrip("/"))
+        if self.GITHUB_FRONTEND_URL:
+            # Add scheme and netloc only (origin)
+            split_front = urlsplit(self.GITHUB_FRONTEND_URL)
+            if split_front.scheme and split_front.netloc:
+                origins.add(f"{split_front.scheme}://{split_front.netloc}")
         return origins
 
     @property

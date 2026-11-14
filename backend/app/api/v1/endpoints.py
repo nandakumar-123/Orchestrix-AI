@@ -41,6 +41,7 @@ from app.services.database import (
     update_repository,
     update_task_status,
 )
+from app.services.github import refresh_workspace_repository
 
 router = APIRouter()
 
@@ -230,6 +231,50 @@ async def delete_repository(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Repository not found in the specified workspace",
         )
+
+
+@router.post(
+    "/repositories/{repository_id}/refresh",
+    response_model=RepositoryResponse,
+    tags=["repositories"],
+    summary="Refresh repository metadata from GitHub",
+)
+async def refresh_repository(
+    repository_id: uuid.UUID,
+    workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+    _csrf: None = Depends(enforce_csrf_protection),
+) -> RepositoryResponse:
+    """Fetch latest metadata from GitHub and refresh the repository record."""
+    try:
+        refreshed = await refresh_workspace_repository(
+            db=db,
+            user_id=current_user.id,
+            workspace_id=workspace_id,
+            repository_id=repository_id,
+        )
+        return RepositoryResponse.model_validate(refreshed)
+    except PermissionError as perm_err:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(perm_err),
+        ) from perm_err
+    except LookupError as look_err:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(look_err),
+        ) from look_err
+    except ValueError as val_err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(val_err),
+        ) from val_err
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to refresh repository metadata: {exc}",
+        ) from exc
 
 
 @router.post(

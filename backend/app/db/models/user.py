@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from app.db.models.audit_log import AuditLog
     from app.db.models.auth_session import AuthSession
     from app.db.models.engineering_task import EngineeringTask
+    from app.db.models.github_account import GitHubAccount
     from app.db.models.membership import WorkspaceMembership
     from app.db.models.repository_member import RepositoryMember
 
@@ -92,6 +93,12 @@ class User(Base):
     sessions: Mapped[list["AuthSession"]] = relationship(
         "AuthSession",
         back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    github_account: Mapped["GitHubAccount | None"] = relationship(
+        "GitHubAccount",
+        back_populates="user",
+        uselist=False,
         cascade="all, delete-orphan",
     )
 

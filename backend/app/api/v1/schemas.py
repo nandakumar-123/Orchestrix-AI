@@ -217,3 +217,77 @@ class CsrfTokenResponse(BaseModel):
     """CSRF token response schema."""
 
     csrf_token: str
+
+
+# -----------------------------------------------------------------------------
+# GitHub Integration Schemas
+# -----------------------------------------------------------------------------
+
+
+class GitHubConnectUrlResponse(BaseModel):
+    """Payload returning authorization URL to initiate GitHub OAuth."""
+
+    auth_url: str
+    state: str
+
+
+class GitHubStatusResponse(BaseModel):
+    """Payload representing connected GitHub account status."""
+
+    connected: bool
+    github_login: str | None = None
+    name: str | None = None
+    avatar_url: str | None = None
+    html_url: str | None = None
+    scope: str | None = None
+    connected_at: datetime | None = None
+
+
+class GitHubRepositoryItem(BaseModel):
+    """Accessible GitHub repository metadata."""
+
+    id: int
+    name: str
+    full_name: str
+    owner_login: str
+    owner_avatar_url: str | None = None
+    description: str | None = None
+    default_branch: str = "main"
+    html_url: str
+    visibility: str = "public"
+    language: str | None = None
+    updated_at: str | None = None
+    stargazers_count: int = 0
+    forks_count: int = 0
+    open_issues_count: int = 0
+    is_connected: bool = False
+
+
+class GitHubRepositoryListResponse(BaseModel):
+    """List of accessible repositories returned from GitHub."""
+
+    items: list[GitHubRepositoryItem]
+    page: int
+    per_page: int
+
+
+class ConnectRepositoryPayload(BaseModel):
+    """Payload to connect an accessible GitHub repository to a workspace."""
+
+    workspace_id: uuid.UUID
+    github_repository_id: int
+    name: str = Field(..., max_length=255)
+    full_name: str = Field(..., max_length=512)
+    owner_login: str = Field(..., max_length=255)
+    description: str | None = None
+    default_branch: str = Field(default="main", max_length=100)
+    html_url: str = Field(..., max_length=1024)
+    visibility: str = Field(default="private", max_length=20)
+    language: str | None = Field(default=None, max_length=100)
+
+
+class GitHubDisconnectResponse(BaseModel):
+    """Response payload after disconnecting GitHub account."""
+
+    status: str = "ok"
+    message: str = "GitHub account disconnected"
