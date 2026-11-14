@@ -211,3 +211,9 @@ class LogoutResponse(BaseModel):
 
     status: str = "ok"
     message: str = "Successfully logged out"
+
+
+class CsrfTokenResponse(BaseModel):
+    """CSRF token response schema."""
+
+    csrf_token: str

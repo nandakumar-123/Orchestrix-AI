@@ -66,6 +66,18 @@ class Settings(BaseSettings):
     SESSION_SECRET_KEY: str = "default_insecure_dev_secret_change_in_production"
     SESSION_TTL_SECONDS: int = 60 * 60 * 24 * 7  # 7 days
     FRONTEND_ORIGIN: str = "http://localhost:3000"
+    CSRF_COOKIE_NAME: str = "orchestrix_csrf"
+    OAUTH_TRX_COOKIE_NAME: str = "orchestrix_oauth_trx"
+
+    @property
+    def allowed_origins(self) -> set[str]:
+        """Return normalized set of allowed frontend origins without trailing slashes."""
+        origins = {orig.rstrip("/") for orig in self.CORS_ORIGINS if orig}
+        if self.FRONTEND_ORIGIN:
+            origins.add(self.FRONTEND_ORIGIN.rstrip("/"))
+        if self.GOOGLE_FRONTEND_URL:
+            origins.add(self.GOOGLE_FRONTEND_URL.rstrip("/"))
+        return origins
 
     @property
     def async_database_url(self) -> str:

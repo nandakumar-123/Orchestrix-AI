@@ -72,7 +72,11 @@ async def api_client() -> AsyncGenerator[AsyncClient, None]:
         app.state.test_installation_id = inst.id
         app.dependency_overrides[get_current_user] = lambda: user
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Authorization": "Bearer test-api-token"},
+    ) as client:
         yield client
 
     app.dependency_overrides.clear()

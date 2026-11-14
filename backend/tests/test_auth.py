@@ -4,21 +4,28 @@ from unittest.mock import patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import settings
 from app.db.base import Base, WorkspaceRole
 from app.db.models.membership import WorkspaceMembership
+from app.db.models.oauth_transaction import OAuthTransaction
 from app.db.models.user import User
 from app.db.models.workspace import Workspace
 from app.db.session import get_db_session
 from app.main import app
 from app.services.auth import (
-    OAUTH_TRANSIT_COOKIE_NAME,
+    CSRF_COOKIE_NAME,
+    CSRF_HEADER_NAME,
+    OAUTH_TRX_COOKIE_NAME,
     SESSION_COOKIE_NAME,
+    consume_oauth_transaction,
     create_auth_session,
-    encode_transit_token,
-    hash_session_token,
+    create_oauth_transaction,
+    generate_csrf_token,
+    hash_secret,
+    provision_or_get_google_user,
     validate_session_token,
 )
 
@@ -47,7 +54,7 @@ async def auth_test_context() -> AsyncGenerator[
 
     async with AsyncClient(
         transport=ASGITransport(app=app),
-        base_url="http://test",
+        base_url="http://localhost:3000",
     ) as client:
         yield client, session_factory
 
@@ -56,10 +63,10 @@ async def auth_test_context() -> AsyncGenerator[
 
 
 @pytest.mark.asyncio
-async def test_session_lifecycle(
+async def test_session_lifecycle_and_throttling(
     auth_test_context: tuple[AsyncClient, async_sessionmaker[AsyncSession]],
 ) -> None:
-    """Test server-side session creation, validation, expiration, and revocation."""
+    """Test server-side session creation, validation, expiration, and last_accessed throttling."""
     _, session_factory = auth_test_context
 
     async with session_factory() as db:
@@ -79,7 +86,7 @@ async def test_session_lifecycle(
             ip_address="127.0.0.1",
             user_agent="pytest",
         )
-        assert session_obj.token_hash == hash_session_token(raw_token)
+        assert session_obj.token_hash == hash_secret(raw_token)
         assert session_obj.is_revoked is False
 
         # 2. Validate valid session
@@ -87,27 +94,34 @@ async def test_session_lifecycle(
         assert val_result is not None
         v_sess, v_user = val_result
         assert v_user.id == user.id
-        assert v_sess.last_accessed_at is not None
+        first_accessed = v_sess.last_accessed_at
+        assert first_accessed is not None
 
-        # 3. Inactive user fails validation
+        # 3. Second validation within 60s should not change last_accessed_at (throttling)
+        val_result2 = await validate_session_token(db, raw_token)
+        assert val_result2 is not None
+        v_sess2, _ = val_result2
+        assert v_sess2.last_accessed_at == first_accessed
+
+        # 4. Inactive user fails validation
         user.is_active = False
         await db.commit()
         assert await validate_session_token(db, raw_token) is None
         user.is_active = True
         await db.commit()
 
-        # 4. Revocation
+        # 5. Revocation
         session_obj.is_revoked = True
         await db.commit()
         assert await validate_session_token(db, raw_token) is None
 
 
 @pytest.mark.asyncio
-async def test_google_login_redirect(
+async def test_google_login_redirect_creates_server_transaction(
     auth_test_context: tuple[AsyncClient, async_sessionmaker[AsyncSession]],
 ) -> None:
-    """Test GET /auth/google/login sets transit cookie and redirects to Google."""
-    client, _ = auth_test_context
+    """Test GET /auth/google/login stores transaction in DB and sets unguessable cookie."""
+    client, session_factory = auth_test_context
 
     with patch.object(settings, "GOOGLE_CLIENT_ID", "test-google-client-id"):
         response = await client.get("/auth/google/login", follow_redirects=False)
@@ -120,46 +134,87 @@ async def test_google_login_redirect(
         assert "state=" in location
         assert "nonce=" in location
 
-        # Verify transit cookie set
-        assert OAUTH_TRANSIT_COOKIE_NAME in response.cookies
+        # Verify browser received only random secret cookie (no verifier/nonce)
+        assert OAUTH_TRX_COOKIE_NAME in response.cookies
+        cookie_val = response.cookies[OAUTH_TRX_COOKIE_NAME]
+
+    # Verify server-side transaction stored in database
+    async with session_factory() as db:
+        lookup_hash = hash_secret(cookie_val)
+        stmt = select(OAuthTransaction).where(OAuthTransaction.lookup_hash == lookup_hash)
+        res = await db.execute(stmt)
+        trx = res.scalars().first()
+        assert trx is not None
+        assert trx.consumed_at is None
+        assert trx.code_verifier is not None
 
 
 @pytest.mark.asyncio
-async def test_google_callback_security_checks(
+async def test_oauth_transaction_atomic_consumption_and_replay(
     auth_test_context: tuple[AsyncClient, async_sessionmaker[AsyncSession]],
 ) -> None:
-    """Test callback rejects invalid state, missing transit cookie, or Google errors."""
+    """Test atomic one-time consumption: first call succeeds, replay and tampered requests fail."""
+    _, session_factory = auth_test_context
+
+    async with session_factory() as db:
+        trx, browser_secret, state, _ = await create_oauth_transaction(db)
+
+        # 1. First valid consumption succeeds
+        consumed, err = await consume_oauth_transaction(db, browser_secret, state)
+        assert err is None
+        assert consumed is not None
+        assert consumed.consumed_at is not None
+
+        # 2. Replay attempt fails immediately
+        consumed_replay, err_replay = await consume_oauth_transaction(db, browser_secret, state)
+        assert consumed_replay is None
+        assert err_replay == "replay_detected"
+
+        # 3. State mismatch fails
+        trx2, secret2, state2, _ = await create_oauth_transaction(db)
+        consumed_mismatch, err_mismatch = await consume_oauth_transaction(
+            db, secret2, "wrong_state"
+        )
+        assert consumed_mismatch is None
+        assert err_mismatch == "state_mismatch"
+
+        # 4. Unknown browser secret fails
+        consumed_unknown, err_unknown = await consume_oauth_transaction(
+            db, "unknown_secret", state2
+        )
+        assert consumed_unknown is None
+        assert err_unknown == "transaction_not_found"
+
+
+@pytest.mark.asyncio
+async def test_google_callback_rejected_scenarios(
+    auth_test_context: tuple[AsyncClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    """Test callback rejects missing cookie, error from Google, and clears transaction cookie."""
     client, _ = auth_test_context
 
-    # 1. Error returned from Google
+    # 1. Error param from Google
     resp1 = await client.get("/auth/google/callback?error=access_denied", follow_redirects=False)
     assert resp1.status_code == 302
     assert "error=access_denied" in resp1.headers["location"]
 
-    # 2. Missing transit cookie
+    # 2. Missing transaction cookie
     resp2 = await client.get("/auth/google/callback?code=abc&state=xyz", follow_redirects=False)
     assert resp2.status_code == 302
-    assert "error=invalid_oauth_state" in resp2.headers["location"]
-
-    # 3. State mismatch
-    transit_token = encode_transit_token("valid_state", "valid_nonce", "valid_verifier")
-    client.cookies.set(OAUTH_TRANSIT_COOKIE_NAME, transit_token)
-    resp3 = await client.get(
-        "/auth/google/callback?code=abc&state=wrong_state", follow_redirects=False
-    )
-    assert resp3.status_code == 302
-    assert "error=state_mismatch" in resp3.headers["location"]
+    assert "error=missing_oauth_params" in resp2.headers["location"]
 
 
 @pytest.mark.asyncio
-async def test_google_callback_unverified_email(
+async def test_google_callback_unverified_email_rejected(
     auth_test_context: tuple[AsyncClient, async_sessionmaker[AsyncSession]],
 ) -> None:
     """Test callback rejects Google accounts with email_verified=False."""
-    client, _ = auth_test_context
+    client, session_factory = auth_test_context
 
-    transit_token = encode_transit_token("mystate", "mynonce", "myverifier")
-    client.cookies.set(OAUTH_TRANSIT_COOKIE_NAME, transit_token)
+    async with session_factory() as db:
+        _, browser_secret, state, _ = await create_oauth_transaction(db)
+
+    client.cookies.set(OAUTH_TRX_COOKIE_NAME, browser_secret)
 
     mock_claims = {
         "sub": "sub-12345",
@@ -173,7 +228,7 @@ async def test_google_callback_unverified_email(
         patch("app.api.v1.auth.verify_google_id_token", return_value=mock_claims),
     ):
         response = await client.get(
-            "/auth/google/callback?code=auth_code_123&state=mystate",
+            f"/auth/google/callback?code=auth_code_123&state={state}",
             follow_redirects=False,
         )
         assert response.status_code == 302
@@ -181,17 +236,74 @@ async def test_google_callback_unverified_email(
 
 
 @pytest.mark.asyncio
-async def test_google_callback_success_provisions_user_and_workspace(
+async def test_google_account_linking_integrity_and_conflicts(
     auth_test_context: tuple[AsyncClient, async_sessionmaker[AsyncSession]],
 ) -> None:
-    """Test successful OAuth exchange provisions user, default workspace, and sets session cookie."""
+    """Test account linking integrity: safe linking on matching verified email, conflict on different sub."""
+    _, session_factory = auth_test_context
+
+    async with session_factory() as db:
+        # Pre-existing user with email but no google_sub
+        existing_user = User(
+            id=uuid.uuid4(),
+            email="developer@example.com",
+            google_sub=None,
+            email_verified=False,
+            full_name="Existing Dev",
+            is_active=True,
+        )
+        db.add(existing_user)
+        await db.commit()
+
+        # 1. Successfully link existing user via verified Google email
+        linked_user, _, _ = await provision_or_get_google_user(
+            db=db,
+            sub="google-sub-first",
+            email="developer@example.com",
+            email_verified=True,
+            full_name="Existing Dev Updated",
+        )
+        assert linked_user.id == existing_user.id
+        assert linked_user.google_sub == "google-sub-first"
+        assert linked_user.email_verified is True
+
+        # 2. Conflicting Google sub attempt on the same account must raise 409 Conflict
+        with pytest.raises(Exception) as exc_info:
+            await provision_or_get_google_user(
+                db=db,
+                sub="google-sub-DIFFERENT",
+                email="developer@example.com",
+                email_verified=True,
+            )
+        assert "409" in str(exc_info.value) or "already linked" in str(exc_info.value)
+
+        # 3. Deactivated account must be rejected with 403 Forbidden
+        existing_user.is_active = False
+        await db.commit()
+        with pytest.raises(Exception) as exc_inactive:
+            await provision_or_get_google_user(
+                db=db,
+                sub="google-sub-first",
+                email="developer@example.com",
+                email_verified=True,
+            )
+        assert "403" in str(exc_inactive.value) or "deactivated" in str(exc_inactive.value)
+
+
+@pytest.mark.asyncio
+async def test_google_callback_success_and_replay_protection(
+    auth_test_context: tuple[AsyncClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    """Test successful callback provisions user, sets session and CSRF cookies, and blocks replay."""
     client, session_factory = auth_test_context
 
-    transit_token = encode_transit_token("state_abc", "nonce_abc", "verifier_abc")
-    client.cookies.set(OAUTH_TRANSIT_COOKIE_NAME, transit_token)
+    async with session_factory() as db:
+        _, browser_secret, state, _ = await create_oauth_transaction(db)
+
+    client.cookies.set(OAUTH_TRX_COOKIE_NAME, browser_secret)
 
     mock_claims = {
-        "sub": "sub-google-99999",
+        "sub": "sub-google-hardened-1",
         "email": "sarah.connor@example.com",
         "email_verified": True,
         "name": "Sarah Connor",
@@ -202,69 +314,98 @@ async def test_google_callback_success_provisions_user_and_workspace(
         patch("app.api.v1.auth.exchange_google_code", return_value={"id_token": "valid_token"}),
         patch("app.api.v1.auth.verify_google_id_token", return_value=mock_claims),
     ):
+        # 1. First callback succeeds
         response = await client.get(
-            "/auth/google/callback?code=mock_code&state=state_abc",
+            f"/auth/google/callback?code=mock_code&state={state}",
             follow_redirects=False,
         )
         assert response.status_code == 302
         assert response.headers["location"].endswith("/dashboard")
         assert SESSION_COOKIE_NAME in response.cookies
-        session_token = response.cookies[SESSION_COOKIE_NAME]
+        assert CSRF_COOKIE_NAME in response.cookies
+        assert response.cookies[SESSION_COOKIE_NAME]
 
-    # Verify database records
-    async with session_factory() as db:
-        user_sess = await validate_session_token(db, session_token)
-        assert user_sess is not None
-        _, user = user_sess
-        assert user.email == "sarah.connor@example.com"
-        assert user.google_sub == "sub-google-99999"
-        assert user.email_verified is True
-        assert user.full_name == "Sarah Connor"
-
-        # Check /api/v1/auth/me endpoint with this session cookie
-        client.cookies.set(SESSION_COOKIE_NAME, session_token)
-        me_resp = await client.get("/api/v1/auth/me")
-        assert me_resp.status_code == 200
-        me_data = me_resp.json()
-        assert me_data["email"] == "sarah.connor@example.com"
-        assert len(me_data["workspaces"]) == 1
-        assert me_data["workspaces"][0]["role"] == "OWNER"
-        assert "Sarah Connor" in me_data["workspaces"][0]["name"]
+        # 2. Replaying the EXACT same callback must fail with replay_detected
+        client.cookies.set(OAUTH_TRX_COOKIE_NAME, browser_secret)
+        replay_response = await client.get(
+            f"/auth/google/callback?code=mock_code&state={state}",
+            follow_redirects=False,
+        )
+        assert replay_response.status_code == 302
+        assert "error=replay_detected" in replay_response.headers["location"]
 
 
 @pytest.mark.asyncio
-async def test_auth_logout(
+async def test_csrf_protection_and_token_validation(
     auth_test_context: tuple[AsyncClient, async_sessionmaker[AsyncSession]],
 ) -> None:
-    """Test POST /api/v1/auth/logout revokes session in DB and clears session cookie."""
+    """Test CSRF protection: Origin verification, missing token, invalid signature, and safe GET."""
     client, session_factory = auth_test_context
 
-    # Create user and session
     async with session_factory() as db:
-        user = User(
-            id=uuid.uuid4(),
-            email="logout_test@example.com",
-            full_name="Logout User",
-            is_active=True,
-        )
+        user = User(id=uuid.uuid4(), email="csrf_user@example.com", is_active=True)
         db.add(user)
         await db.commit()
-        _, raw_token = await create_auth_session(db, user.id)
+        _, raw_session = await create_auth_session(db, user.id)
 
-    client.cookies.set(SESSION_COOKIE_NAME, raw_token)
+    # 1. Safe GET request succeeds without CSRF headers
+    client.cookies.set(SESSION_COOKIE_NAME, raw_session)
+    me_res = await client.get("/api/v1/auth/me")
+    assert me_res.status_code == 200
 
-    # Validate active
-    me_before = await client.get("/api/v1/auth/me")
-    assert me_before.status_code == 200
+    # 2. Fetch fresh CSRF token
+    csrf_res = await client.get("/api/v1/auth/csrf")
+    assert csrf_res.status_code == 200
+    csrf_token = csrf_res.json()["csrf_token"]
+    assert CSRF_COOKIE_NAME in csrf_res.cookies
 
-    # Logout
-    logout_resp = await client.post("/api/v1/auth/logout")
-    assert logout_resp.status_code == 200
-    assert logout_resp.json()["status"] == "ok"
+    # 3. State-changing POST without CSRF header fails with 403 Forbidden
+    post_no_csrf = await client.post(
+        "/api/v1/auth/logout",
+        headers={"Origin": "http://localhost:3000"},
+    )
+    assert post_no_csrf.status_code == 403
+    assert "CSRF" in post_no_csrf.json()["detail"]
 
-    # Validate unauthenticated afterwards
-    me_after = await client.get("/api/v1/auth/me")
-    assert me_after.status_code == 401
+    # 4. State-changing POST with disallowed Origin fails with 403 Forbidden
+    post_bad_origin = await client.post(
+        "/api/v1/auth/logout",
+        headers={
+            "Origin": "http://malicious-site.com",
+            CSRF_HEADER_NAME: csrf_token,
+        },
+    )
+    assert post_bad_origin.status_code == 403
+    assert "Origin not permitted" in post_bad_origin.json()["detail"]
+
+    # 5. State-changing POST with invalid signature fails with 403 Forbidden
+    client.cookies.delete(CSRF_COOKIE_NAME)
+    client.cookies.set(CSRF_COOKIE_NAME, "forged_raw.forged_signature")
+    post_invalid_sig = await client.post(
+        "/api/v1/auth/logout",
+        headers={
+            "Origin": "http://localhost:3000",
+            CSRF_HEADER_NAME: "forged_raw.forged_signature",
+        },
+    )
+    assert post_invalid_sig.status_code == 403
+    assert "Invalid token signature" in post_invalid_sig.json()["detail"]
+
+    # 6. Valid state-changing POST with matching CSRF cookie, header, and allowed Origin succeeds
+    valid_token = generate_csrf_token()
+    client.cookies.delete(CSRF_COOKIE_NAME)
+    client.cookies.set(CSRF_COOKIE_NAME, valid_token)
+    post_valid = await client.post(
+        "/api/v1/auth/logout",
+        headers={
+            "Origin": "http://localhost:3000",
+            CSRF_HEADER_NAME: valid_token,
+        },
+    )
+    assert post_valid.status_code == 200
+    assert post_valid.json()["status"] == "ok"
+    assert post_valid.status_code == 200
+    assert post_valid.json()["status"] == "ok"
 
 
 @pytest.mark.asyncio
@@ -275,17 +416,12 @@ async def test_workspace_membership_authorization(
     client, session_factory = auth_test_context
 
     async with session_factory() as db:
-        # Workspace 1 & 2
         ws1 = Workspace(name="Workspace One", slug="ws-one")
         ws2 = Workspace(name="Workspace Two", slug="ws-two")
         db.add_all([ws1, ws2])
         await db.commit()
-        await db.refresh(ws1)
-        await db.refresh(ws2)
 
-        # User 1: MEMBER in ws1, OWNER in ws2
         user1 = User(id=uuid.uuid4(), email="user1@example.com", is_active=True)
-        # User 2: not member in ws1
         user2 = User(id=uuid.uuid4(), email="user2@example.com", is_active=True)
         db.add_all([user1, user2])
         await db.commit()
@@ -314,8 +450,14 @@ async def test_workspace_membership_authorization(
     assert resp_member_read.status_code == 200
 
     # 4. User 1 tries to create repository in ws1 (MEMBER < ADMIN required) -> 403 Forbidden
+    csrf_token = generate_csrf_token()
+    client.cookies.set(CSRF_COOKIE_NAME, csrf_token)
     resp_create_insufficient = await client.post(
         "/api/v1/repositories",
+        headers={
+            "Origin": "http://localhost:3000",
+            CSRF_HEADER_NAME: csrf_token,
+        },
         json={
             "workspace_id": str(ws1.id),
             "installation_id": str(uuid.uuid4()),

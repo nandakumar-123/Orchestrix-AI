@@ -4,6 +4,7 @@ Integration tests against PostgreSQL (Neon) verifying:
 2. Fix B: RepositoryMember migration safety & composite tenant integrity
 """
 
+import asyncio
 import uuid
 from collections.abc import AsyncGenerator
 
@@ -27,6 +28,11 @@ from app.db.models import (
     User,
     Workspace,
     WorkspaceMembership,
+)
+from app.services.auth import (
+    consume_oauth_transaction,
+    create_oauth_transaction,
+    provision_or_get_google_user,
 )
 from app.services.database import (
     add_repository_member,
@@ -294,3 +300,93 @@ async def test_postgres_repository_member_tenant_integrity(pg_session: AsyncSess
             )
             pg_session.add(bad_rm)
             await pg_session.flush()
+
+
+async def test_postgres_concurrent_oauth_transaction_consumption() -> None:
+    """
+    Test atomic one-time consumption in PostgreSQL under concurrent execution.
+    Two tasks attempting to consume the same transaction simultaneously:
+    Exactly one succeeds and the other receives 'replay_detected'.
+    """
+    if not POSTGRES_AVAILABLE:
+        pytest.skip("PostgreSQL is not configured in settings.async_database_url")
+
+    engine = create_async_engine(settings.async_database_url, echo=False)
+    session_factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+
+    try:
+        # Create transaction
+        async with session_factory() as sess_create:
+            trx, browser_secret, state, _ = await create_oauth_transaction(sess_create)
+
+        # Run two concurrent consumptions on separate database sessions
+        async def _consume_worker() -> tuple[object | None, str | None]:
+            async with session_factory() as sess_worker:
+                return await consume_oauth_transaction(sess_worker, browser_secret, state)
+
+        res1, res2 = await asyncio.gather(_consume_worker(), _consume_worker())
+
+        successes = [r for r in (res1, res2) if r[0] is not None]
+        failures = [r for r in (res1, res2) if r[0] is None]
+
+        assert len(successes) == 1, f"Expected exactly 1 success, got {len(successes)}"
+        assert len(failures) == 1, f"Expected exactly 1 failure, got {len(failures)}"
+        assert failures[0][1] == "replay_detected"
+
+        # Clean up test transaction record
+        async with session_factory() as sess_cleanup:
+            await sess_cleanup.execute(
+                text("DELETE FROM oauth_transactions WHERE id = :id"),
+                {"id": trx.id},
+            )
+            await sess_cleanup.commit()
+    finally:
+        await engine.dispose()
+
+
+async def test_postgres_concurrent_user_provisioning_integrity() -> None:
+    """
+    Test concurrent user provisioning for the same verified email and sub against PostgreSQL.
+    Both concurrent requests must resolve to the same user without uncaught collision errors.
+    """
+    if not POSTGRES_AVAILABLE:
+        pytest.skip("PostgreSQL is not configured in settings.async_database_url")
+
+    engine = create_async_engine(settings.async_database_url, echo=False)
+    session_factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+
+    test_sub = f"pg-concurrent-sub-{uuid.uuid4().hex[:8]}"
+    test_email = f"concurrent-{uuid.uuid4().hex[:8]}@example.com"
+
+    try:
+
+        async def _provision_worker() -> User:
+            async with session_factory() as sess:
+                user, _, _ = await provision_or_get_google_user(
+                    db=sess,
+                    sub=test_sub,
+                    email=test_email,
+                    email_verified=True,
+                    full_name="Concurrent Test User",
+                )
+                return user
+
+        # Launch two simultaneous provisioning workers
+        u1, u2 = await asyncio.gather(_provision_worker(), _provision_worker())
+        assert u1.id == u2.id
+        assert u1.google_sub == test_sub
+
+        # Verify exactly one user exists in PostgreSQL
+        async with session_factory() as sess_verify:
+            res = await sess_verify.execute(select(User).where(User.google_sub == test_sub))
+            users = res.scalars().all()
+            assert len(users) == 1
+
+            # Clean up test user (cascades to memberships and workspaces)
+            await sess_verify.execute(
+                text("DELETE FROM users WHERE id = :id"),
+                {"id": u1.id},
+            )
+            await sess_verify.commit()
+    finally:
+        await engine.dispose()

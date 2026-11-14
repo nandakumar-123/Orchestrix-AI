@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
+    enforce_csrf_protection,
     get_current_user,
     require_workspace_membership,
     verify_workspace_membership,
@@ -148,6 +149,7 @@ async def create_repository(
     payload: RepositoryCreate,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user),
+    _csrf: None = Depends(enforce_csrf_protection),
 ) -> RepositoryResponse:
     """Register a new repository under an authorized workspace and installation."""
     await verify_workspace_membership(
@@ -191,6 +193,7 @@ async def patch_repository(
     workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
     db: AsyncSession = Depends(get_db_session),
     _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.ADMIN)),
+    _csrf: None = Depends(enforce_csrf_protection),
 ) -> RepositoryResponse:
     """Update metadata for an existing repository in a workspace."""
     repo = await update_repository(
@@ -218,6 +221,7 @@ async def delete_repository(
     workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
     db: AsyncSession = Depends(get_db_session),
     _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.ADMIN)),
+    _csrf: None = Depends(enforce_csrf_protection),
 ) -> None:
     """Soft-delete/deactivate a repository within a workspace."""
     success = await deactivate_repository(db, workspace_id, repository_id)
@@ -241,6 +245,7 @@ async def add_member_to_repository(
     workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
     db: AsyncSession = Depends(get_db_session),
     _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.ADMIN)),
+    _csrf: None = Depends(enforce_csrf_protection),
 ) -> RepositoryMemberResponse:
     """
     Assign a workspace user to a repository with an application role (ADMIN, DEVELOPER, VIEWER).
@@ -310,6 +315,7 @@ async def create_task(
     payload: EngineeringTaskCreate,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user),
+    _csrf: None = Depends(enforce_csrf_protection),
 ) -> EngineeringTaskResponse:
     """Create a new autonomous engineering task in a workspace."""
     await verify_workspace_membership(
@@ -373,6 +379,7 @@ async def patch_task(
     workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
     db: AsyncSession = Depends(get_db_session),
     _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.MEMBER)),
+    _csrf: None = Depends(enforce_csrf_protection),
 ) -> EngineeringTaskResponse:
     """Update status or assigned agent for a workspace-scoped engineering task."""
     if payload.status is None and payload.assigned_agent is None:

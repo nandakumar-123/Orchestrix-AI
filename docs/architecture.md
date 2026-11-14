@@ -94,31 +94,44 @@ Workspace (Multi-Tenant Root)
    - Implemented: Route-level `require_workspace_membership` dependency enforcing role hierarchy (`VIEWER <= MEMBER <= ADMIN <= OWNER`). Cross-workspace access returns `403 Forbidden`.
    - Planned (Future Phases): GitHub App installation token issuance and webhook dispatch.
 
-## Authentication & Authorization (Google OAuth 2.0 & Session Management)
+## Authentication & Authorization (Hardened Google OAuth 2.0 & Session Security)
 
-Orchestrix AI implements production-grade authentication with tenant-isolated workspace authorization:
+Orchestrix AI implements production-grade, hardened authentication with tenant-isolated workspace authorization:
 
-1. **Login Initiation (`GET /auth/google/login`)**:
+1. **Server-Side One-Time OAuth Transactions (`GET /auth/google/login`)**:
    - Generates cryptographically secure `state`, `nonce`, and PKCE `code_verifier`/`code_challenge` (S256).
-   - Encodes parameters into a signed, tamper-proof, short-lived transit JWT cookie (`orchestrix_oauth_transit`).
+   - Generates a 32-byte opaque random secret stored in the browser as `orchestrix_oauth_trx` cookie (HttpOnly, SameSite=Lax, 10-minute expiry).
+   - Persists the transaction in PostgreSQL (`oauth_transactions`) with `lookup_hash = SHA256(secret)`, `state_hash = SHA256(state)`, `nonce`, and `code_verifier`.
+   - Zero exposure: Raw PKCE code verifiers and nonces are never placed in browser cookies or client storage.
    - Redirects user to Google OAuth consent screen.
-2. **Callback Handling (`GET /auth/google/callback`)**:
-   - Verifies transit cookie and state match (preventing CSRF).
-   - Exchanges authorization code and PKCE verifier for Google tokens.
-   - Validates Google ID token against Google's JWKS (`https://www.googleapis.com/oauth2/v3/certs`) and checks `email_verified == True`.
-   - Provisions or matches user account:
-     - Resolves user by `google_sub` or verified `email`.
-     - Automatically provisions an isolated personal workspace with `OWNER` role for first-time users.
-   - Generates a 32-byte cryptographically secure random session token.
-   - Stores SHA-256 digest in `auth_sessions.token_hash`.
-   - Issues `orchestrix_session` HttpOnly, SameSite=Lax, Secure cookie.
-   - Clears transit cookie and redirects to `/dashboard`.
-3. **Current User Profile (`GET /api/v1/auth/me`)**:
-   - Validates session token in DB, updates `last_accessed_at`.
-   - Returns user profile, verification status, and all workspace memberships with application roles.
-4. **Session Termination (`POST /api/v1/auth/logout`)**:
-   - Revokes session in database (`is_revoked = True`).
-   - Clears `orchestrix_session` cookie.
+2. **Atomic One-Time Callback Handling & Replay Protection (`GET /auth/google/callback`)**:
+   - Verifies browser secret cookie and callback state match.
+   - Atomically consumes the transaction via single SQL statement:
+     `UPDATE oauth_transactions SET consumed_at = :now WHERE lookup_hash = :lh AND state_hash = :sh AND consumed_at IS NULL AND expires_at > :now RETURNING *`
+   - Replayed, expired, or concurrent callback attempts fail atomically with `replay_detected` or `expired`.
+   - Deletes `orchestrix_oauth_trx` cookie immediately on both success and failure.
+   - Exchanges authorization code and PKCE verifier for Google tokens, validating ID token with Google's JWKS and audience/issuer.
+3. **Google Account-Linking Integrity**:
+   - Normalizes email addresses (lowercased, stripped).
+   - Requires verified emails (`email_verified == True`); unverified emails are strictly rejected.
+   - Enforces unique `google_sub`: if an existing user with matching email has a conflicting Google sub, login fails with `409 Conflict (account_linking_conflict)`.
+   - Inactive accounts (`is_active == False`) fail immediately with `403 Forbidden (account_inactive)`.
+   - Handles concurrent registration collisions with rollback and retry.
+   - Retains existing workspaces; provisions isolated personal workspace with `OWNER` role only for newly registered users.
+4. **CSRF Protection (Double-Submit HMAC-Signed Token & Origin Verification)**:
+   - Provides `GET /api/v1/auth/csrf` returning HMAC-signed CSRF tokens, mirrored in `orchestrix_csrf` cookie.
+   - Enforces CSRF validation on all cookie-authenticated state-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`):
+     - Validates `Origin` / `Referer` headers against `allowed_origins` (`CORS_ORIGINS` + `FRONTEND_ORIGIN`).
+     - Validates `X-CSRF-Token` header matches `orchestrix_csrf` cookie via constant-time `hmac.compare_digest`.
+     - Validates HMAC signature of the token using `SESSION_SECRET_KEY`.
+   - Safe HTTP methods (`GET`, `HEAD`, `OPTIONS`) and Bearer-token requests are exempt.
+5. **Session Management & Throttling**:
+   - Issues 32-byte cryptographically secure session token in `orchestrix_session` HttpOnly cookie.
+   - Verifies session tokens against SHA-256 digests in `auth_sessions`.
+   - Throttles `last_accessed_at` database updates (at most once every 60 seconds) to mitigate database write amplification.
+   - `POST /api/v1/auth/logout`: Revokes active session, clears session, CSRF, and transaction cookies. Protected with CSRF validation.
+6. **Security Logging**:
+   - Structured events logged via `logging.getLogger("orchestrix.security")` for auditability without logging tokens, codes, or secrets.
 
 ## Secret Isolation
 

@@ -36,6 +36,13 @@ function LoginForm() {
   const getErrorMessage = (code: string | null): string | null => {
     if (!code) return null;
     switch (code) {
+      case "replay_detected":
+        return "An authorization replay attempt was detected and blocked. Please start a fresh login.";
+      case "expired":
+      case "oauth_expired":
+        return "Your login session expired. Please try signing in again.";
+      case "missing_oauth_params":
+        return "Required authorization parameters were missing from the callback. Please try again.";
       case "invalid_oauth_state":
         return "The login session expired or state was invalid. Please try signing in again.";
       case "state_mismatch":
@@ -44,6 +51,10 @@ function LoginForm() {
         return "Failed to verify your identity with Google. Please retry.";
       case "unverified_email":
         return "Your Google email address is not verified. Please verify your email with Google first.";
+      case "account_linking_conflict":
+        return "This account is already linked to a different Google identity. Please use your original login.";
+      case "account_inactive":
+        return "This account has been deactivated. Please contact your workspace administrator.";
       case "provisioning_failed":
         return "Failed to initialize your user workspace. Please try again or contact support.";
       case "access_denied":

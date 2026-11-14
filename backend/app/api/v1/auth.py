@@ -1,11 +1,10 @@
-import secrets
-
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user
+from app.api.deps import enforce_csrf_protection, get_current_user
 from app.api.v1.schemas import (
+    CsrfTokenResponse,
     CurrentUserResponse,
     LogoutResponse,
     UserWorkspaceMembershipResponse,
@@ -14,17 +13,19 @@ from app.core.config import settings
 from app.db.models.user import User
 from app.db.session import get_db_session
 from app.services.auth import (
-    OAUTH_TRANSIT_COOKIE_NAME,
+    CSRF_COOKIE_NAME,
+    OAUTH_TRX_COOKIE_NAME,
     SESSION_COOKIE_NAME,
+    consume_oauth_transaction,
     create_auth_session,
-    decode_transit_token,
-    encode_transit_token,
+    create_oauth_transaction,
     exchange_google_code,
+    generate_csrf_token,
     generate_google_auth_url,
-    generate_pkce_pair,
     get_user_with_workspaces,
     provision_or_get_google_user,
     revoke_session_token,
+    security_logger,
     verify_google_id_token,
 )
 
@@ -33,7 +34,7 @@ google_oauth_router = APIRouter(prefix="/auth/google", tags=["google-oauth"])
 
 
 # -----------------------------------------------------------------------------
-# Google OAuth 2.0 PKCE Flow
+# Google OAuth 2.0 PKCE Flow (Hardened with Server-Side Transaction & Replay Protection)
 # -----------------------------------------------------------------------------
 
 
@@ -46,31 +47,35 @@ google_oauth_router = APIRouter(prefix="/auth/google", tags=["google-oauth"])
         }
     },
 )
-async def google_login(request: Request) -> Response:
+async def google_login(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+) -> Response:
     """
     Initiate Google OAuth 2.0 PKCE flow.
-    Generates cryptographically random state, nonce, and PKCE (S256) verifier/challenge.
-    Signs transit parameters into a short-lived transit cookie and redirects to Google.
+    Generates a server-side one-time OAuth transaction in PostgreSQL.
+    Binds the transaction to the browser using an unguessable HttpOnly cookie secret.
+    Zero raw PKCE code verifiers or nonces are exposed to the browser.
     """
     if not settings.GOOGLE_CLIENT_ID:
+        security_logger.error("security_event=google_oauth_unconfigured")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Google OAuth is not configured on the server",
         )
 
-    state = secrets.token_urlsafe(32)
-    nonce = secrets.token_urlsafe(32)
-    code_verifier, code_challenge = generate_pkce_pair()
+    client_ip = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
 
-    transit_token = encode_transit_token(
-        state=state,
-        nonce=nonce,
-        code_verifier=code_verifier,
+    trx, browser_secret, state, code_challenge = await create_oauth_transaction(
+        db=db,
+        ip_address=client_ip,
+        user_agent=user_agent,
     )
 
     auth_url = generate_google_auth_url(
         state=state,
-        nonce=nonce,
+        nonce=trx.nonce,
         code_challenge=code_challenge,
     )
 
@@ -78,9 +83,10 @@ async def google_login(request: Request) -> Response:
         url=auth_url,
         status_code=status.HTTP_307_TEMPORARY_REDIRECT,
     )
+    # Set short-lived browser binding cookie (10 minutes)
     redirect.set_cookie(
-        key=OAUTH_TRANSIT_COOKIE_NAME,
-        value=transit_token,
+        key=OAUTH_TRX_COOKIE_NAME,
+        value=browser_secret,
         max_age=600,
         httponly=True,
         samesite="lax",
@@ -107,57 +113,52 @@ async def google_callback(
     db: AsyncSession = Depends(get_db_session),
 ) -> Response:
     """
-    Handle Google OAuth 2.0 callback:
-    - Verifies CSRF state and PKCE verifier from transit cookie
-    - Exchanges authorization code for tokens
-    - Validates Google ID token signature and nonce against JWKS
-    - Provisions or updates user and ensures default personal workspace
-    - Issues server-side opaque session and sets HttpOnly cookie
+    Handle Google OAuth 2.0 callback with atomic one-time transaction consumption:
+    - Verifies and atomically consumes server-side transaction record (replay-proof)
+    - Validates state against stored transaction hash
+    - Exchanges authorization code for tokens using server-stored PKCE verifier
+    - Validates Google ID token against Google's JWKS and stored nonce
+    - Provisions or links user account safely without race conditions or conflicting identities
+    - Issues server-side opaque session and sets HttpOnly session + CSRF cookies
     """
     frontend_url = settings.GOOGLE_FRONTEND_URL.rstrip("/")
 
+    def _error_redirect(err_code: str) -> RedirectResponse:
+        res = RedirectResponse(
+            url=f"{frontend_url}/login?error={err_code}",
+            status_code=status.HTTP_302_FOUND,
+        )
+        res.delete_cookie(OAUTH_TRX_COOKIE_NAME, path="/")
+        return res
+
     if error:
-        return RedirectResponse(
-            url=f"{frontend_url}/login?error={error}",
-            status_code=status.HTTP_302_FOUND,
-        )
+        security_logger.warning("security_event=google_oauth_callback_error error=%s", error)
+        return _error_redirect(error)
 
-    transit_cookie = request.cookies.get(OAUTH_TRANSIT_COOKIE_NAME)
-    if not transit_cookie or not code or not state:
-        return RedirectResponse(
-            url=f"{frontend_url}/login?error=invalid_oauth_state",
-            status_code=status.HTTP_302_FOUND,
-        )
+    browser_secret = request.cookies.get(OAUTH_TRX_COOKIE_NAME)
+    if not browser_secret or not code or not state:
+        security_logger.warning("security_event=oauth_callback_missing_params")
+        return _error_redirect("missing_oauth_params")
 
-    transit_data = decode_transit_token(transit_cookie)
-    if not transit_data or transit_data.get("state") != state:
-        return RedirectResponse(
-            url=f"{frontend_url}/login?error=state_mismatch",
-            status_code=status.HTTP_302_FOUND,
-        )
-
-    expected_nonce = transit_data.get("nonce")
-    code_verifier = transit_data.get("code_verifier")
-    if not code_verifier:
-        return RedirectResponse(
-            url=f"{frontend_url}/login?error=missing_verifier",
-            status_code=status.HTTP_302_FOUND,
-        )
+    # Atomically consume transaction from PostgreSQL
+    trx, err_reason = await consume_oauth_transaction(
+        db=db,
+        browser_secret=browser_secret,
+        state=state,
+    )
+    if trx is None:
+        return _error_redirect(err_reason or "invalid_oauth_state")
 
     try:
-        token_response = await exchange_google_code(code, code_verifier)
+        token_response = await exchange_google_code(code, trx.code_verifier)
         id_token = token_response.get("id_token")
         if not id_token:
             raise ValueError("No id_token received in Google response")
 
-        claims = await verify_google_id_token(id_token, expected_nonce=expected_nonce)
-    except Exception:
-        err_response = RedirectResponse(
-            url=f"{frontend_url}/login?error=token_verification_failed",
-            status_code=status.HTTP_302_FOUND,
-        )
-        err_response.delete_cookie(OAUTH_TRANSIT_COOKIE_NAME, path="/")
-        return err_response
+        claims = await verify_google_id_token(id_token, expected_nonce=trx.nonce)
+    except Exception as exc:
+        security_logger.error("security_event=token_verification_failed error=%s", str(exc))
+        return _error_redirect("token_verification_failed")
 
     sub = claims.get("sub")
     email = claims.get("email")
@@ -166,12 +167,8 @@ async def google_callback(
     avatar_url = claims.get("picture")
 
     if not sub or not email or not email_verified:
-        err_response = RedirectResponse(
-            url=f"{frontend_url}/login?error=unverified_email",
-            status_code=status.HTTP_302_FOUND,
-        )
-        err_response.delete_cookie(OAUTH_TRANSIT_COOKIE_NAME, path="/")
-        return err_response
+        security_logger.warning("security_event=unverified_email_rejected")
+        return _error_redirect("unverified_email")
 
     try:
         user, _, _ = await provision_or_get_google_user(
@@ -190,19 +187,24 @@ async def google_callback(
             ip_address=client_ip,
             user_agent=user_agent,
         )
-    except Exception:
-        err_response = RedirectResponse(
-            url=f"{frontend_url}/login?error=provisioning_failed",
-            status_code=status.HTTP_302_FOUND,
-        )
-        err_response.delete_cookie(OAUTH_TRANSIT_COOKIE_NAME, path="/")
-        return err_response
+    except HTTPException as http_exc:
+        if http_exc.status_code == status.HTTP_409_CONFLICT:
+            return _error_redirect("account_linking_conflict")
+        if http_exc.status_code == status.HTTP_403_FORBIDDEN:
+            return _error_redirect("account_inactive")
+        return _error_redirect("provisioning_failed")
+    except Exception as exc:
+        security_logger.error("security_event=provisioning_unexpected_error error=%s", str(exc))
+        return _error_redirect("provisioning_failed")
 
     success_response = RedirectResponse(
         url=f"{frontend_url}/dashboard",
         status_code=status.HTTP_302_FOUND,
     )
-    success_response.delete_cookie(OAUTH_TRANSIT_COOKIE_NAME, path="/")
+    # Always delete the one-time transaction cookie
+    success_response.delete_cookie(OAUTH_TRX_COOKIE_NAME, path="/")
+
+    # Issue secure HttpOnly session cookie
     success_response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=raw_session_token,
@@ -212,12 +214,46 @@ async def google_callback(
         secure=settings.APP_ENV != "development",
         path="/",
     )
+
+    # Issue initial CSRF token cookie for frontend
+    csrf_token = generate_csrf_token()
+    success_response.set_cookie(
+        key=CSRF_COOKIE_NAME,
+        value=csrf_token,
+        max_age=settings.SESSION_TTL_SECONDS,
+        httponly=False,  # Accessible to frontend JS to mirror in X-CSRF-Token header
+        samesite="lax",
+        secure=settings.APP_ENV != "development",
+        path="/",
+    )
+
+    security_logger.info("security_event=oauth_login_success user_id=%s", user.id)
     return success_response
 
 
 # -----------------------------------------------------------------------------
-# User Profile & Session Management
+# User Profile, CSRF & Session Management
 # -----------------------------------------------------------------------------
+
+
+@auth_router.get(
+    "/csrf",
+    response_model=CsrfTokenResponse,
+    summary="Get CSRF Token",
+)
+async def get_csrf_token(response: Response) -> CsrfTokenResponse:
+    """Generate and return an HMAC-signed CSRF token, setting the double-submit cookie."""
+    token = generate_csrf_token()
+    response.set_cookie(
+        key=CSRF_COOKIE_NAME,
+        value=token,
+        max_age=settings.SESSION_TTL_SECONDS,
+        httponly=False,
+        samesite="lax",
+        secure=settings.APP_ENV != "development",
+        path="/",
+    )
+    return CsrfTokenResponse(csrf_token=token)
 
 
 @auth_router.get(
@@ -265,11 +301,14 @@ async def logout(
     request: Request,
     response: Response,
     db: AsyncSession = Depends(get_db_session),
+    _csrf: None = Depends(enforce_csrf_protection),
 ) -> LogoutResponse:
-    """Revoke the current server-side session and clear the session cookie."""
+    """Revoke the current server-side session and clear cookies."""
     raw_token = request.cookies.get(SESSION_COOKIE_NAME)
     if raw_token:
         await revoke_session_token(db, raw_token)
 
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    response.delete_cookie(CSRF_COOKIE_NAME, path="/")
+    response.delete_cookie(OAUTH_TRX_COOKIE_NAME, path="/")
     return LogoutResponse(status="ok", message="Successfully logged out")

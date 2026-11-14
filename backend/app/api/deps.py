@@ -10,11 +10,13 @@ from app.db.models.user import User
 from app.db.session import get_db_session
 from app.services.auth import (
     SESSION_COOKIE_NAME,
+    validate_csrf_request,
     validate_session_token,
     verify_workspace_membership,
 )
 
 __all__ = [
+    "enforce_csrf_protection",
     "get_current_user",
     "get_current_user_optional",
     "require_workspace_membership",
@@ -88,3 +90,11 @@ def require_workspace_membership(
         )
 
     return _workspace_auth_dependency
+
+
+def enforce_csrf_protection(request: Request) -> None:
+    """
+    Enforce CSRF validation for state-changing browser cookie requests (POST, PUT, PATCH, DELETE).
+    Validates Origin/Referer against allowed origins and requires matching double-submitted CSRF token.
+    """
+    validate_csrf_request(request)

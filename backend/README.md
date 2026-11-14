@@ -81,6 +81,13 @@ uv run pytest tests/test_postgres_integration.py
 
 ## API Endpoints
 
+### Authentication & Security
+- `GET /auth/google/login` — Initiates Google OAuth 2.0 PKCE flow, stores server-side transaction in `oauth_transactions`, sets `orchestrix_oauth_trx` cookie.
+- `GET /auth/google/callback?code={code}&state={state}` — Atomic one-time transaction consumption, PKCE code exchange, Google token verification, user provisioning, and session cookie issuance.
+- `GET /api/v1/auth/csrf` — Issues double-submit CSRF token and `orchestrix_csrf` cookie.
+- `GET /api/v1/auth/me` — Returns current authenticated user profile, verified status, and workspace memberships with roles.
+- `POST /api/v1/auth/logout` — Revokes server-side session, clears session, CSRF, and transaction cookies (requires CSRF token).
+
 ### Repositories
 - `GET /api/v1/repositories?workspace_id={uuid}&limit=20&offset=0` — List active repositories for a workspace.
 - `GET /api/v1/repositories/{repository_id}?workspace_id={uuid}` — Retrieve repository details.
