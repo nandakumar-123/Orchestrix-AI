@@ -12,18 +12,34 @@ Orchestrix-AI/
 │   └── workflows/
 │       └── ci.yml               # Automated CI workflow
 ├── backend/
+│   ├── alembic/                 # Alembic migration scripts
 │   ├── app/
 │   │   ├── api/
-│   │   │   └── v1/              # API router and endpoints (Health, etc.)
+│   │   │   └── v1/              # Versioned API routes & Pydantic schemas
 │   │   ├── core/                # Settings & Pydantic configurations
-│   │   └── main.py              # FastAPI app factory
-│   ├── tests/                   # Pytest test suite
+│   │   ├── db/
+│   │   │   ├── base.py          # Base declarative class & naming conventions
+│   │   │   ├── session.py       # AsyncEngine, AsyncSession, check_database_connection
+│   │   │   └── models/          # SQLAlchemy 2.x Async ORM entities
+│   │   │       ├── audit_log.py
+│   │   │       ├── engineering_task.py
+│   │   │       ├── github_installation.py
+│   │   │       ├── membership.py
+│   │   │       ├── pull_request.py
+│   │   │       ├── repository.py
+│   │   │       ├── repository_member.py
+│   │   │       ├── user.py
+│   │   │       └── workspace.py
+│   │   ├── services/
+│   │   │   └── database.py      # Reusable business logic & queries
+│   │   └── main.py              # FastAPI app factory & lifespan
+│   ├── tests/                   # Pytest automated test suite
 │   ├── pyproject.toml           # Authoritative Python package definitions
 │   ├── uv.lock                  # Pinned dependency lockfile
 │   └── requirements.txt         # Compatibility export
 ├── frontend/
 │   ├── src/
-│   │   ├── app/                 # Next.js App Router (Layout & Page)
+│   │   ├── app/                 # Next.js App Router (Layout & Pages)
 │   │   ├── components/ui/       # shadcn/ui component primitives
 │   │   ├── lib/                 # Utility helpers (clsx, twMerge)
 │   │   └── __tests__/           # Vitest and Testing Library test suite
@@ -36,9 +52,22 @@ Orchestrix-AI/
 └── README.md                    # Project README and quick start
 ```
 
-## Security & Secret Management
+## Relational Entity Schema
 
-- The `.gitignore` file enforces that `.env`, `.env*.local`, `*.pem`, `*.key`, and the `keys/` directory are never tracked in Git.
-- Real keys and secrets are loaded dynamically via `pydantic-settings` from local environment files.
-- Sample placeholder configuration is maintained in `.env.example`, `backend/.env.example`, and `frontend/.env.example`.
+```text
+Workspace (Multi-Tenant Root)
+├── GitHubInstallation (1:N)
+│   └── Repository (1:N)
+│       ├── RepositoryMember (1:N) ── User
+│       ├── EngineeringTask (1:N)
+│       └── PullRequestRecord (1:N)
+├── User (through WorkspaceMembership N:M)
+├── EngineeringTask (1:N)
+└── AuditLog (1:N)
+```
 
+## Security & Tenant Isolation Rules
+
+1. **Workspace Boundary**: All queries accessing repositories, tasks, PRs, and audit logs must explicitly filter on `workspace_id`.
+2. **Foreign Key Integrity**: A repository's installation must belong to the same workspace; tasks cannot be bound to cross-workspace repositories.
+3. **Secret Isolation**: Secrets (`.env`, `*.pem`, `*.key`) are completely excluded from Git via `.gitignore`. Audit log details automatically redact sensitive keys.

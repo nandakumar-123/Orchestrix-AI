@@ -1,8 +1,22 @@
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import api_router
 from app.core.config import settings
+from app.db.session import close_database_connection, get_async_engine
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
+    """Manage application startup and shutdown events cleanly."""
+    # Ensure database connection pool initializes
+    get_async_engine()
+    yield
+    # Dispose connection pool cleanly on shutdown
+    await close_database_connection()
 
 
 def create_app() -> FastAPI:
@@ -13,6 +27,7 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
+        lifespan=lifespan,
     )
 
     application.add_middleware(
@@ -32,6 +47,7 @@ def create_app() -> FastAPI:
             "status": "running",
             "docs": "/docs",
             "health": f"{settings.API_V1_STR}/health",
+            "database_health": f"{settings.API_V1_STR}/health/database",
         }
 
     return application
