@@ -1,4 +1,5 @@
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -42,8 +43,14 @@ class Settings(BaseSettings):
     GOOGLE_CLOUD_PROJECT_RESOURCE: str = ""
     GOOGLE_CLOUD_PROJECT_NUMBER: str = ""
 
-    # Database & Cache (optional at initial foundation stage)
+    # Database & Cache
     DATABASE_URL: str = ""
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_TIMEOUT: int = 30
+    DB_POOL_RECYCLE: int = 300
+    DB_ECHO: bool = False
+
     NEO4J_URI: str = ""
     NEO4J_USERNAME: str = ""
     NEO4J_PASSWORD: str = ""
@@ -56,6 +63,80 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: str = ""
     GOOGLE_REDIRECT_URI: str = ""
     GOOGLE_FRONTEND_URL: str = "http://localhost:3000"
+
+    @property
+    def async_database_url(self) -> str:
+        """
+        Return an asyncpg-compatible database URL.
+
+        Converts libpq parameters (e.g. sslmode=require, channel_binding=require)
+        to clean asyncpg equivalents (ssl=require) without unrecognized keyword arguments.
+        """
+        raw_url = self.DATABASE_URL.strip()
+        if not raw_url:
+            return ""
+
+        # Parse components
+        split_url = urlsplit(raw_url)
+        scheme = split_url.scheme
+
+        if scheme in ("postgres", "postgresql"):
+            new_scheme = "postgresql+asyncpg"
+        elif scheme == "":
+            new_scheme = "postgresql+asyncpg"
+        else:
+            new_scheme = scheme
+
+        # Sanitize query parameters for asyncpg compatibility
+        query_params = dict(parse_qsl(split_url.query))
+        cleaned_params: dict[str, str] = {}
+
+        for k, v in query_params.items():
+            # asyncpg does not accept channel_binding
+            if k == "channel_binding":
+                continue
+            # convert sslmode to ssl
+            if k == "sslmode":
+                cleaned_params["ssl"] = v
+            else:
+                cleaned_params[k] = v
+
+        new_query = urlencode(cleaned_params)
+
+        return urlunsplit(
+            (
+                new_scheme,
+                split_url.netloc,
+                split_url.path,
+                new_query,
+                split_url.fragment,
+            )
+        )
+
+    @property
+    def sync_database_url(self) -> str:
+        """Return a synchronous postgresql:// URL for Alembic migration tooling."""
+        raw_url = self.DATABASE_URL.strip()
+        if not raw_url:
+            return ""
+
+        split_url = urlsplit(raw_url)
+        scheme = split_url.scheme
+
+        if scheme in ("postgres", "postgresql+asyncpg"):
+            new_scheme = "postgresql"
+        else:
+            new_scheme = scheme
+
+        return urlunsplit(
+            (
+                new_scheme,
+                split_url.netloc,
+                split_url.path,
+                split_url.query,
+                split_url.fragment,
+            )
+        )
 
     model_config = SettingsConfigDict(
         # Load .env from backend directory or workspace root directory if present

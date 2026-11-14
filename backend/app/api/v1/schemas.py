@@ -8,3 +8,11 @@ class HealthResponse(BaseModel):
     app: str = Field(..., description="Application name")
     environment: str = Field(..., description="Current environment")
     version: str = Field(..., description="API version")
+
+
+class DatabaseHealthResponse(BaseModel):
+    """Database connectivity health check response schema."""
+
+    status: str = Field(..., description="Database status: healthy or unavailable")
+    database: str = Field(..., description="Database engine type (e.g. postgresql)")
+    connected: bool = Field(..., description="Whether ping was successful")
