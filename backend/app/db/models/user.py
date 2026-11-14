@@ -8,7 +8,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base, utc_now
 
 if TYPE_CHECKING:
+    from app.db.models.audit_log import AuditLog
+    from app.db.models.engineering_task import EngineeringTask
     from app.db.models.membership import WorkspaceMembership
+    from app.db.models.repository_member import RepositoryMember
 
 
 class User(Base):
@@ -57,6 +60,20 @@ class User(Base):
         "WorkspaceMembership",
         back_populates="user",
         cascade="all, delete-orphan",
+    )
+    repository_memberships: Mapped[list["RepositoryMember"]] = relationship(
+        "RepositoryMember",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    created_tasks: Mapped[list["EngineeringTask"]] = relationship(
+        "EngineeringTask",
+        back_populates="creator",
+        foreign_keys="EngineeringTask.created_by",
+    )
+    audit_logs: Mapped[list["AuditLog"]] = relationship(
+        "AuditLog",
+        back_populates="actor",
     )
 
     def __repr__(self) -> str:

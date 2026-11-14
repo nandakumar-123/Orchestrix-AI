@@ -32,3 +32,51 @@ class WorkspaceRole(enum.StrEnum):
     ADMIN = "ADMIN"
     MEMBER = "MEMBER"
     VIEWER = "VIEWER"
+
+
+class RepositoryMemberRole(enum.StrEnum):
+    """Supported roles for repository members in Orchestrix AI."""
+
+    ADMIN = "ADMIN"
+    DEVELOPER = "DEVELOPER"
+    VIEWER = "VIEWER"
+
+
+class TaskType(enum.StrEnum):
+    """Supported types of engineering tasks."""
+
+    BUG_FIX = "BUG_FIX"
+    FEATURE = "FEATURE"
+    REFACTOR = "REFACTOR"
+    SECURITY = "SECURITY"
+    TESTING = "TESTING"
+    GENERAL = "GENERAL"
+
+
+class TaskPriority(enum.StrEnum):
+    """Priority levels for engineering tasks."""
+
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
+
+
+class TaskStatus(enum.StrEnum):
+    """Lifecycle statuses for engineering tasks."""
+
+    BACKLOG = "BACKLOG"
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    WAITING_APPROVAL = "WAITING_APPROVAL"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class PullRequestState(enum.StrEnum):
+    """Statuses for tracked pull requests."""
+
+    OPEN = "OPEN"
+    CLOSED = "CLOSED"
+    MERGED = "MERGED"

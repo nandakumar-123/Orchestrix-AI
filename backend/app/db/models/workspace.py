@@ -8,7 +8,11 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base, utc_now
 
 if TYPE_CHECKING:
+    from app.db.models.audit_log import AuditLog
+    from app.db.models.engineering_task import EngineeringTask
+    from app.db.models.github_installation import GitHubInstallation
     from app.db.models.membership import WorkspaceMembership
+    from app.db.models.repository import Repository
 
 
 class Workspace(Base):
@@ -46,6 +50,26 @@ class Workspace(Base):
     # Relationships
     memberships: Mapped[list["WorkspaceMembership"]] = relationship(
         "WorkspaceMembership",
+        back_populates="workspace",
+        cascade="all, delete-orphan",
+    )
+    github_installations: Mapped[list["GitHubInstallation"]] = relationship(
+        "GitHubInstallation",
+        back_populates="workspace",
+        cascade="all, delete-orphan",
+    )
+    repositories: Mapped[list["Repository"]] = relationship(
+        "Repository",
+        back_populates="workspace",
+        cascade="all, delete-orphan",
+    )
+    engineering_tasks: Mapped[list["EngineeringTask"]] = relationship(
+        "EngineeringTask",
+        back_populates="workspace",
+        cascade="all, delete-orphan",
+    )
+    audit_logs: Mapped[list["AuditLog"]] = relationship(
+        "AuditLog",
         back_populates="workspace",
         cascade="all, delete-orphan",
     )
