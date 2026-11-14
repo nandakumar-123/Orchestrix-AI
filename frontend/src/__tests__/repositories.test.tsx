@@ -64,12 +64,44 @@ describe("RepositoriesPage Integration", () => {
     });
   });
 
+  it("opens professional account connection modal with Option A and Option B", async () => {
+    const user = userEvent.setup();
+
+    vi.spyOn(authModule, "fetchCurrentUser").mockResolvedValue(mockUser);
+    vi.spyOn(githubModule, "fetchGitHubStatus").mockResolvedValue({ connected: false });
+    vi.spyOn(githubModule, "fetchWorkspaceRepositories").mockResolvedValue([]);
+
+    render(<RepositoriesPage />);
+
+    await waitFor(() => {
+      expect(screen.getAllByRole("button", { name: /Connect GitHub Account/i }).length).toBeGreaterThan(0);
+    });
+
+    // Click "Connect GitHub Account"
+    const connectButtons = screen.getAllByRole("button", { name: /Connect GitHub Account/i });
+    await user.click(connectButtons[0]);
+
+    // Modal should appear
+    await waitFor(() => {
+      expect(screen.getByTestId("connect-account-modal")).toBeInTheDocument();
+      expect(screen.getByText(/Option A — Use Current GitHub Account/i)).toBeInTheDocument();
+      expect(screen.getByText(/Option B — Connect a Different GitHub Account/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Connect Current Account/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Proceed to GitHub/i })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /Sign out of GitHub\.com/i })).toHaveAttribute(
+        "href",
+        "https://github.com/logout"
+      );
+    });
+  });
+
   it("renders connected GitHub status and active workspace repositories", async () => {
     vi.spyOn(authModule, "fetchCurrentUser").mockResolvedValue(mockUser);
     vi.spyOn(githubModule, "fetchGitHubStatus").mockResolvedValue({
       connected: true,
       github_login: "octo-engineer",
       scope: "repo,read:user",
+      avatar_url: "https://github.com/images/error/octocat_happy.gif",
     });
 
     const mockRepos: githubModule.WorkspaceRepository[] = [
@@ -104,6 +136,7 @@ describe("RepositoriesPage Integration", () => {
       expect(screen.getByText("Python")).toBeInTheDocument();
       expect(screen.getAllByText("Connect GitHub Repository").length).toBeGreaterThan(0);
       expect(screen.getByRole("button", { name: /Switch Account/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Disconnect Account/i })).toBeInTheDocument();
     });
   });
 
@@ -182,6 +215,71 @@ describe("RepositoriesPage Integration", () => {
     });
   });
 
+  it("opens disconnect confirmation modal and purges credentials while preserving repositories", async () => {
+    const user = userEvent.setup();
+
+    vi.spyOn(authModule, "fetchCurrentUser").mockResolvedValue(mockUser);
+    vi.spyOn(githubModule, "fetchGitHubStatus").mockResolvedValue({
+      connected: true,
+      github_login: "octo-engineer",
+    });
+    vi.spyOn(githubModule, "fetchWorkspaceRepositories").mockResolvedValue([]);
+    const disconnectSpy = vi.spyOn(githubModule, "disconnectGitHub").mockResolvedValue(true);
+
+    render(<RepositoriesPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Disconnect Account/i })).toBeInTheDocument();
+    });
+
+    // Click "Disconnect Account"
+    await user.click(screen.getByRole("button", { name: /Disconnect Account/i }));
+
+    // Disconnect modal should appear
+    await waitFor(() => {
+      expect(screen.getByTestId("disconnect-modal")).toBeInTheDocument();
+      expect(screen.getByText(/Credentials purged:/i)).toBeInTheDocument();
+      expect(screen.getByText(/Repositories preserved:/i)).toBeInTheDocument();
+      expect(screen.getByText(/GitHub session remains:/i)).toBeInTheDocument();
+    });
+
+    // Confirm Disconnect
+    const confirmBtn = screen.getByRole("button", { name: /Confirm Disconnect/i });
+    await user.click(confirmBtn);
+
+    await waitFor(() => {
+      expect(disconnectSpy).toHaveBeenCalled();
+      expect(screen.getByText(/stored credentials purged/i)).toBeInTheDocument();
+    });
+  });
+
+  it("displays account confirmation banner with avatar when returning from GitHub OAuth", async () => {
+    // Simulate OAuth callback query params: ?github=connected&login=octo-fresh
+    window.history.pushState({}, "Test", "/repositories?github=connected&login=octo-fresh");
+
+    vi.spyOn(authModule, "fetchCurrentUser").mockResolvedValue(mockUser);
+    vi.spyOn(githubModule, "fetchGitHubStatus").mockResolvedValue({
+      connected: true,
+      github_login: "octo-fresh",
+      avatar_url: "https://avatars.githubusercontent.com/u/12345?v=4",
+    });
+    vi.spyOn(githubModule, "fetchWorkspaceRepositories").mockResolvedValue([]);
+
+    render(<RepositoriesPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("account-confirmation-banner")).toBeInTheDocument();
+      expect(screen.getAllByText(/@octo-fresh/).length).toBeGreaterThan(0);
+      expect(screen.getByText(/Verified Identity/i)).toBeInTheDocument();
+      expect(screen.getByRole("img", { name: "octo-fresh" })).toHaveAttribute(
+        "src",
+        "https://avatars.githubusercontent.com/u/12345?v=4"
+      );
+      expect(screen.getByRole("button", { name: /Confirm & Continue/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Not your account\? Switch/i })).toBeInTheDocument();
+    });
+  });
+
   it("renders workspace selector for multi-workspace users and switches workspace", async () => {
     const user = userEvent.setup();
 
@@ -220,63 +318,17 @@ describe("RepositoriesPage Integration", () => {
     expect(connectBtn).toBeDisabled();
   });
 
-  it("opens account switching guidance modal with clear instructions", async () => {
-    const user = userEvent.setup();
+  it("displays error notification when callback contains github_error", async () => {
+    window.history.pushState({}, "Test", "/repositories?github_error=access_denied");
 
     vi.spyOn(authModule, "fetchCurrentUser").mockResolvedValue(mockUser);
-    vi.spyOn(githubModule, "fetchGitHubStatus").mockResolvedValue({
-      connected: true,
-      github_login: "octo-engineer",
-    });
-    vi.spyOn(githubModule, "fetchWorkspaceRepositories").mockResolvedValue([]);
-    const disconnectSpy = vi.spyOn(githubModule, "disconnectGitHub").mockResolvedValue(true);
-
-    render(<RepositoriesPage />);
-
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: /Switch Account/i })).toBeInTheDocument();
-    });
-
-    // Open switch modal
-    await user.click(screen.getByRole("button", { name: /Switch Account/i }));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("account-switch-modal")).toBeInTheDocument();
-      expect(screen.getByText(/GitHub browser session reuse/i)).toBeInTheDocument();
-      expect(screen.getByText(/Incognito \/ Private/i)).toBeInTheDocument();
-    });
-
-    // Click Disconnect & Reconnect
-    const actionBtn = screen.getByRole("button", {
-      name: /Disconnect & Reconnect to GitHub/i,
-    });
-    await user.click(actionBtn);
-
-    await waitFor(() => {
-      expect(disconnectSpy).toHaveBeenCalled();
-    });
-  });
-
-  it("displays account confirmation banner when returning from GitHub OAuth", async () => {
-    // Simulate OAuth callback query params: ?github=connected&login=octo-fresh
-    window.history.pushState({}, "Test", "/repositories?github=connected&login=octo-fresh");
-
-    vi.spyOn(authModule, "fetchCurrentUser").mockResolvedValue(mockUser);
-    vi.spyOn(githubModule, "fetchGitHubStatus").mockResolvedValue({
-      connected: true,
-      github_login: "octo-fresh",
-    });
+    vi.spyOn(githubModule, "fetchGitHubStatus").mockResolvedValue({ connected: false });
     vi.spyOn(githubModule, "fetchWorkspaceRepositories").mockResolvedValue([]);
 
     render(<RepositoriesPage />);
 
     await waitFor(() => {
-      const banner = screen.getByTestId("account-confirmation-banner");
-      expect(banner).toBeInTheDocument();
-      expect(screen.getAllByText(/@octo-fresh/).length).toBeGreaterThan(0);
-      expect(screen.getByText(/verify that this is the intended GitHub account/i)).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: /Confirm & Continue/i })).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: /Not your account\? Switch/i })).toBeInTheDocument();
+      expect(screen.getByText(/GitHub connection failed: access_denied/i)).toBeInTheDocument();
     });
   });
 });

@@ -68,7 +68,9 @@ export default function RepositoriesPage() {
   const [loading, setLoading] = React.useState(true);
   const [loadingModal, setLoadingModal] = React.useState(false);
   const [isModalOpen, setIsModalOpen] = React.useState(false);
+  const [isConnectModalOpen, setIsConnectModalOpen] = React.useState(false);
   const [isSwitchModalOpen, setIsSwitchModalOpen] = React.useState(false);
+  const [isDisconnectModalOpen, setIsDisconnectModalOpen] = React.useState(false);
   const [actionLoadingId, setActionLoadingId] = React.useState<string | null>(null);
   const [connectingRepoId, setConnectingRepoId] = React.useState<number | null>(null);
 
@@ -186,7 +188,7 @@ export default function RepositoriesPage() {
   // Open Connect Repository Drawer / Modal
   const handleOpenConnectModal = async () => {
     if (!githubStatus.connected) {
-      window.location.href = getGitHubConnectUrl();
+      setIsConnectModalOpen(true);
       return;
     }
 
@@ -312,23 +314,15 @@ export default function RepositoriesPage() {
     }
   };
 
-  // Disconnect GitHub account
-  const handleDisconnectGitHub = async () => {
-    if (
-      !confirm(
-        "Are you sure you want to disconnect your GitHub account? Repositories already connected to your workspace will remain connected, but you won't be able to discover or sync new repositories until you reconnect."
-      )
-    ) {
-      return;
-    }
-
+  // Execute disconnect GitHub account
+  const executeDisconnectGitHub = async () => {
     try {
       const ok = await disconnectGitHub();
       if (ok) {
         setGithubStatus({ connected: false });
         setNotification({
           type: "info",
-          message: "GitHub account disconnected and credentials purged.",
+          message: "GitHub account disconnected and stored credentials purged.",
         });
       }
     } catch {
@@ -379,9 +373,7 @@ export default function RepositoriesPage() {
               <Button
                 size="sm"
                 className="text-xs h-8 bg-slate-900 hover:bg-slate-800 text-white"
-                onClick={() => {
-                  window.location.href = getGitHubConnectUrl();
-                }}
+                onClick={() => setIsConnectModalOpen(true)}
               >
                 <GitHubIcon className="h-3.5 w-3.5 mr-1.5" />
                 Connect GitHub Account
@@ -395,41 +387,65 @@ export default function RepositoriesPage() {
       {accountConfirmation && (
         <div
           data-testid="account-confirmation-banner"
-          className="p-4 rounded-xl border border-blue-200 bg-blue-50/90 text-blue-900 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-in fade-in"
+          className="p-4 rounded-xl border border-blue-200 bg-blue-50/95 text-blue-900 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 animate-in fade-in"
         >
-          <div className="flex items-start sm:items-center gap-3">
-            <div className="h-8 w-8 rounded-full bg-blue-600 text-white flex items-center justify-center shrink-0">
-              <GitHubIcon className="h-4 w-4" />
-            </div>
+          <div className="flex items-center gap-3.5">
+            {githubStatus.avatar_url ? (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img
+                src={githubStatus.avatar_url}
+                alt={githubStatus.github_login || "avatar"}
+                className="h-11 w-11 rounded-full border border-blue-300 shadow-2xs shrink-0 object-cover"
+              />
+            ) : (
+              <div className="h-11 w-11 rounded-full bg-blue-600 text-white flex items-center justify-center shrink-0">
+                <GitHubIcon className="h-5 w-5" />
+              </div>
+            )}
             <div>
-              <p className="text-xs font-semibold">
-                GitHub account connected as{" "}
-                <span className="font-bold underline">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-xs text-blue-900">
+                  GitHub account connected:
+                </span>
+                <span className="font-bold text-sm text-blue-950 font-mono">
                   @{accountConfirmation.login || githubStatus.github_login || "user"}
                 </span>
-              </p>
-              <p className="text-[11px] text-blue-700 mt-0.5">
-                Please verify that this is the intended GitHub account for your Orchestrix workspace.
+                <Badge variant="success" className="text-[10px] py-0.5 px-2">
+                  Verified Identity
+                </Badge>
+              </div>
+              <p className="text-xs text-blue-700 mt-0.5">
+                Please confirm that this is the intended GitHub identity for your Orchestrix workspace.
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2 self-end sm:self-auto">
+          <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
             <Button
               size="sm"
               variant="outline"
-              className="text-xs h-7.5 bg-white border-blue-200 text-blue-700 hover:bg-blue-100"
+              className="text-xs h-8 bg-white border-blue-200 text-blue-700 hover:bg-blue-100"
               onClick={() => {
                 setAccountConfirmation(null);
                 setIsSwitchModalOpen(true);
               }}
             >
+              <ArrowRightLeft className="h-3.5 w-3.5 mr-1" />
               Not your account? Switch
             </Button>
             <Button
               size="sm"
-              className="text-xs h-7.5 bg-blue-600 hover:bg-blue-700 text-white"
-              onClick={() => setAccountConfirmation(null)}
+              className="text-xs h-8 bg-blue-600 hover:bg-blue-700 text-white shadow-xs"
+              onClick={() => {
+                setAccountConfirmation(null);
+                setNotification({
+                  type: "success",
+                  message: `Confirmed active GitHub connection as @${
+                    accountConfirmation.login || githubStatus.github_login || "user"
+                  }`,
+                });
+              }}
             >
+              <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
               Confirm & Continue
             </Button>
           </div>
@@ -571,7 +587,7 @@ export default function RepositoriesPage() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={handleDisconnectGitHub}
+                onClick={() => setIsDisconnectModalOpen(true)}
                 className="text-xs h-7.5 border-slate-200 text-slate-600 hover:text-rose-600 hover:border-rose-200"
               >
                 Disconnect Account
@@ -581,9 +597,7 @@ export default function RepositoriesPage() {
             <Button
               size="sm"
               className="text-xs h-8 bg-slate-900 hover:bg-slate-800 text-white"
-              onClick={() => {
-                window.location.href = getGitHubConnectUrl();
-              }}
+              onClick={() => setIsConnectModalOpen(true)}
             >
               <GitHubIcon className="h-3.5 w-3.5 mr-1.5" />
               Connect GitHub Account
@@ -642,9 +656,7 @@ export default function RepositoriesPage() {
           onAction={
             githubStatus.connected
               ? handleOpenConnectModal
-              : () => {
-                  window.location.href = getGitHubConnectUrl();
-                }
+              : () => setIsConnectModalOpen(true)
           }
         />
       ) : filtered.length === 0 ? (
@@ -771,7 +783,132 @@ export default function RepositoriesPage() {
         </div>
       )}
 
-      {/* Account Switching Guidance Modal */}
+      {/* Professional Account Connection Dialog */}
+      {isConnectModalOpen && (
+        <div
+          data-testid="connect-account-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4 animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-xl w-full overflow-hidden">
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="h-9 w-9 rounded-lg bg-slate-900 text-white flex items-center justify-center">
+                  <GitHubIcon className="h-5 w-5" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-900">Connect GitHub to Orchestrix AI</h2>
+                  <p className="text-xs text-slate-500">Choose which GitHub account you want to connect</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsConnectModalOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {/* Option A: Use Current GitHub Account */}
+              <div className="p-4 rounded-xl border border-blue-200 bg-blue-50/50 hover:bg-blue-50 transition-colors flex flex-col justify-between gap-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-xs text-slate-900">
+                        Option A — Use Current GitHub Account
+                      </span>
+                      <Badge variant="secondary" className="text-[10px] bg-blue-100 text-blue-800 border-blue-200">
+                        Default
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-slate-600 leading-relaxed">
+                      GitHub will authorize the account currently signed in to <strong>github.com</strong> in this browser.
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  className="w-full text-xs h-8 bg-blue-600 hover:bg-blue-700 text-white"
+                  onClick={() => {
+                    setIsConnectModalOpen(false);
+                    window.location.href = getGitHubConnectUrl();
+                  }}
+                >
+                  <GitHubIcon className="h-3.5 w-3.5 mr-1.5" />
+                  Connect Current Account
+                </Button>
+              </div>
+
+              {/* Option B: Connect a Different GitHub Account */}
+              <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-50 transition-colors flex flex-col justify-between gap-3">
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-xs text-slate-900">
+                      Option B — Connect a Different GitHub Account
+                    </span>
+                    <Badge variant="secondary" className="text-[10px]">
+                      Account Switch
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    Because GitHub automatically uses your active session, to connect a different account:
+                  </p>
+                  <ol className="list-decimal list-inside text-xs text-slate-600 space-y-1 pl-1">
+                    <li>
+                      Open{" "}
+                      <a
+                        href="https://github.com/logout"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-blue-600 underline font-medium inline-flex items-center gap-0.5"
+                      >
+                        github.com/logout <ExternalLink className="h-3 w-3 inline" />
+                      </a>{" "}
+                      to sign out of your current account (or open Orchestrix in a separate private/incognito window).
+                    </li>
+                    <li>Sign in with your desired GitHub account.</li>
+                    <li>Return here and proceed with authorization.</li>
+                  </ol>
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <a
+                    href="https://github.com/logout"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex-1 text-center py-1.5 px-3 rounded-lg border border-slate-300 text-xs text-slate-700 bg-white hover:bg-slate-100 font-medium inline-flex items-center justify-center gap-1.5"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    Sign out of GitHub.com
+                  </a>
+                  <Button
+                    size="sm"
+                    className="flex-1 text-xs h-8 bg-slate-900 hover:bg-slate-800 text-white"
+                    onClick={() => {
+                      setIsConnectModalOpen(false);
+                      window.location.href = getGitHubConnectUrl();
+                    }}
+                  >
+                    Proceed to GitHub
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-3.5 border-t border-slate-100 bg-slate-50 flex items-center justify-end">
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs h-7.5"
+                onClick={() => setIsConnectModalOpen(false)}
+              >
+                Close
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Account Switching Guidance Modal (When already connected) */}
       {isSwitchModalOpen && (
         <div
           data-testid="account-switch-modal"
@@ -811,7 +948,16 @@ export default function RepositoriesPage() {
                 <p className="font-semibold text-slate-800">To switch to a different account:</p>
                 <ol className="list-decimal list-inside space-y-1.5 text-slate-600 text-[11px] pl-1">
                   <li>
-                    Open <a href="https://github.com" target="_blank" rel="noreferrer" className="text-blue-600 underline font-medium">github.com</a> in a new tab and <strong>sign out</strong> of your current account (or open Orchestrix in an <strong>Incognito / Private</strong> window).
+                    Open{" "}
+                    <a
+                      href="https://github.com/logout"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-blue-600 underline font-medium inline-flex items-center gap-0.5"
+                    >
+                      github.com/logout <ExternalLink className="h-3 w-3 inline" />
+                    </a>{" "}
+                    in a new tab to <strong>sign out</strong> of your current account (or use an <strong>Incognito / Private</strong> window).
                   </li>
                   <li>
                     Sign in to your target GitHub account on github.com.
@@ -850,6 +996,84 @@ export default function RepositoriesPage() {
                 }}
               >
                 Disconnect & Reconnect to GitHub
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Disconnect Confirmation Modal */}
+      {isDisconnectModalOpen && (
+        <div
+          data-testid="disconnect-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4 animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full overflow-hidden">
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="h-8 w-8 rounded-lg bg-rose-50 border border-rose-100 text-rose-600 flex items-center justify-center">
+                  <Trash2 className="h-4 w-4" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-900">Disconnect GitHub Account</h2>
+                  <p className="text-xs text-slate-500">
+                    Disconnect @{githubStatus.github_login || "account"} from Orchestrix
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsDisconnectModalOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-3.5 text-xs text-slate-600">
+              <p className="leading-relaxed">
+                Are you sure you want to disconnect your GitHub identity?
+              </p>
+
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2 text-[11px]">
+                <div className="flex items-start gap-2">
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0 mt-0.5" />
+                  <span>
+                    <strong>Credentials purged:</strong> Stored OAuth tokens and credentials will be permanently removed from Orchestrix.
+                  </span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0 mt-0.5" />
+                  <span>
+                    <strong>Repositories preserved:</strong> Repositories already connected to your workspace will remain connected and active.
+                  </span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="h-3.5 w-3.5 text-amber-600 shrink-0 mt-0.5" />
+                  <span>
+                    <strong>GitHub session remains:</strong> Disconnecting Orchestrix does not sign you out of github.com in your browser.
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-slate-100 bg-slate-50 flex items-center justify-end gap-2.5">
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs h-8"
+                onClick={() => setIsDisconnectModalOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                className="text-xs h-8 bg-rose-600 hover:bg-rose-700 text-white"
+                onClick={async () => {
+                  setIsDisconnectModalOpen(false);
+                  await executeDisconnectGitHub();
+                }}
+              >
+                Confirm Disconnect
               </Button>
             </div>
           </div>
