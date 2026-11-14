@@ -19,11 +19,17 @@ The database architecture is built on **Neon Serverless PostgreSQL** using **SQL
 
 ### Multi-Tenant Isolation Strategy & Database Integrity
 - All repositories, installations, engineering tasks, pull requests, repository members, and audit logs are strictly scoped to `workspace_id`.
-- **Database-Level Composite Foreign Keys**:
+- **Database-Level Composite Foreign Keys & Deletion Policy**:
   - `repositories (installation_id, workspace_id)` -> `github_installations (id, workspace_id)`: Guarantees a repository cannot reference an installation from another workspace.
-  - `engineering_tasks (repository_id, workspace_id)` -> `repositories (id, workspace_id)`: Guarantees that if a task references a repository, the repository belongs to the same workspace (nullable when repository_id is NULL).
-  - `pull_request_records (repository_id, workspace_id)` -> `repositories (id, workspace_id)`: Guarantees a pull request belongs to the same workspace as its repository.
-  - `repository_members (repository_id, workspace_id)` -> `repositories (id, workspace_id)` AND `(user_id, workspace_id)` -> `workspace_memberships (user_id, workspace_id)`: Guarantees that only users who have verified membership in the repository's workspace can be assigned to that repository.
+  - `engineering_tasks (repository_id, workspace_id)` -> `repositories (id, workspace_id)`:
+    - Uses PostgreSQL column-specific `ON DELETE SET NULL (repository_id)`.
+    - When a repository is deleted, only `repository_id` is set to NULL while `workspace_id` remains strictly NOT NULL and unchanged.
+    - Tasks remain preserved with all titles, status, descriptions, and audit history.
+    - Supported both via direct database SQL deletion and via the transactional service `delete_repository_hard`.
+  - `pull_request_records (repository_id, workspace_id)` -> `repositories (id, workspace_id)`: Guarantees a pull request belongs to the same workspace as its repository (`ON DELETE CASCADE`).
+  - `repository_members (repository_id, workspace_id)` -> `repositories (id, workspace_id)` AND `(user_id, workspace_id)` -> `workspace_memberships (user_id, workspace_id)`:
+    - Guarantees that only users who have verified membership in the repository's workspace can be assigned to that repository.
+    - Migration safety is verified forward-only (revision `e4dec49fd32c`) ensuring orphan records and invalid memberships cause migration aborts without silent data corruption or deletion.
 - **Repository Member Roles**:
   - `ADMIN`: Manage repository access and repository-level settings within the workspace.
   - `DEVELOPER`: Work with engineering tasks and repository operations permitted by workspace policy.
@@ -58,6 +64,10 @@ uv run alembic revision --autogenerate -m "describe schema change"
 cd backend
 # Run test suite including database unit tests, tenant integrity, and health endpoints
 uv run pytest
+
+# Run PostgreSQL integration tests against live Neon database
+uv run pytest tests/test_postgres_integration.py
+```
 ```
 
 ---

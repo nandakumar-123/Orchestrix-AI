@@ -1,7 +1,7 @@
 import uuid
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import (
@@ -185,6 +185,39 @@ async def deactivate_repository(
         return False
 
     repo.is_active = False
+    await session.flush()
+    return True
+
+
+async def delete_repository_hard(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    repository_id: uuid.UUID,
+) -> bool:
+    """
+    Transactionally hard-delete a repository within a workspace.
+    Ensures safe deletion semantics across all databases:
+    1. First explicitly disassociates engineering tasks (sets repository_id = NULL)
+       while preserving task.workspace_id, status, title, metadata, etc.
+    2. Then deletes the repository, relying on database cascade/null actions.
+    """
+    repo = await get_repository_by_id(session, workspace_id, repository_id)
+    if not repo:
+        return False
+
+    # Explicitly disassociate engineering tasks in the same transaction
+    disassociate_stmt = (
+        update(EngineeringTask)
+        .where(
+            EngineeringTask.workspace_id == workspace_id,
+            EngineeringTask.repository_id == repository_id,
+        )
+        .values(repository_id=None)
+    )
+    await session.execute(disassociate_stmt)
+
+    # Delete repository entity
+    await session.delete(repo)
     await session.flush()
     return True
 

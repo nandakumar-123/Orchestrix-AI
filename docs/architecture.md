@@ -69,12 +69,17 @@ Workspace (Multi-Tenant Root)
 ## Security & Tenant Isolation Rules
 
 1. **Workspace Boundary**: All queries accessing repositories, tasks, PRs, repository members, and audit logs must explicitly filter on `workspace_id`.
-2. **Database-Level Composite Foreign Keys**:
+2. **Database-Level Composite Foreign Keys & Deletion Integrity**:
    - `repositories (installation_id, workspace_id)` -> `github_installations (id, workspace_id)`
-   - `engineering_tasks (repository_id, workspace_id)` -> `repositories (id, workspace_id)`
+   - `engineering_tasks (repository_id, workspace_id)` -> `repositories (id, workspace_id)`:
+     - Uses PostgreSQL column-specific `ON DELETE SET NULL (repository_id)`.
+     - Deleting a repository sets `repository_id` to NULL without affecting the non-nullable `workspace_id`.
+     - Supported natively via direct SQL deletion and via the transactional service `delete_repository_hard`.
    - `pull_request_records (repository_id, workspace_id)` -> `repositories (id, workspace_id)`
    - `repository_members (repository_id, workspace_id)` -> `repositories (id, workspace_id)`
-   - `repository_members (user_id, workspace_id)` -> `workspace_memberships (user_id, workspace_id)`
+   - `repository_members (user_id, workspace_id)` -> `workspace_memberships (user_id, workspace_id)`:
+     - Guarantees repository members must be active members of the repository's workspace.
+     - Safe migration validation in Alembic ensures existing data is verified and never silently modified.
 3. **Repository Member Application Roles**:
    - `ADMIN`: Manage repository settings and member access within workspace boundaries.
    - `DEVELOPER`: Work with tasks and engineering operations.
