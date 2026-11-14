@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -291,3 +292,121 @@ class GitHubDisconnectResponse(BaseModel):
 
     status: str = "ok"
     message: str = "GitHub account disconnected"
+
+
+# -----------------------------------------------------------------------------
+# Repository Intelligence & Structural Indexing Schemas
+# -----------------------------------------------------------------------------
+
+
+class IndexingJobResponse(BaseModel):
+    """Repository intelligence indexing job status."""
+
+    id: uuid.UUID
+    workspace_id: uuid.UUID
+    repository_id: uuid.UUID
+    commit_sha: str
+    branch: str
+    status: str
+    progress_percent: int
+    current_step: str
+    files_count: int
+    symbols_count: int
+    dependencies_count: int
+    error_message: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class IndexingJobListResponse(BaseModel):
+    """List of indexing jobs for a repository."""
+
+    jobs: list[IndexingJobResponse]
+    total: int
+
+
+class RepositoryIntelligenceResponse(BaseModel):
+    """Repository structural intelligence overview."""
+
+    repository_id: uuid.UUID
+    workspace_id: uuid.UUID
+    commit_sha: str | None = None
+    branch: str | None = None
+    total_files: int = 0
+    total_lines: int = 0
+    total_bytes: int = 0
+    total_symbols: int = 0
+    total_dependencies: int = 0
+    languages_summary: dict[str, Any] | None = None
+    structure_summary: dict[str, Any] | None = None
+    entry_points: list[str] | None = None
+    last_indexed_at: datetime | None = None
+
+
+class RepositoryFileResponse(BaseModel):
+    """Metadata for an indexed file in a repository."""
+
+    id: uuid.UUID
+    path: str
+    file_name: str
+    extension: str
+    language: str | None = None
+    size_bytes: int
+    line_count: int
+    is_manifest: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RepositoryFilesListResponse(BaseModel):
+    """Paginated list of repository files."""
+
+    files: list[RepositoryFileResponse]
+    total: int
+
+
+class CodeSymbolResponse(BaseModel):
+    """Extracted code symbol (function, class, method)."""
+
+    id: uuid.UUID
+    file_path: str
+    name: str
+    symbol_type: str
+    language: str
+    start_line: int
+    end_line: int
+    signature: str | None = None
+    parent_symbol_name: str | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CodeSymbolListResponse(BaseModel):
+    """Paginated list of code symbols."""
+
+    symbols: list[CodeSymbolResponse]
+    total: int
+
+
+class FileDependencyResponse(BaseModel):
+    """Extracted dependency specification."""
+
+    id: uuid.UUID
+    source_file_path: str
+    name: str
+    version_spec: str | None = None
+    dependency_type: str
+    package_manager: str | None = None
+    is_external: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class FileDependencyListResponse(BaseModel):
+    """Paginated list of dependencies."""
+
+    dependencies: list[FileDependencyResponse]
+    total: int

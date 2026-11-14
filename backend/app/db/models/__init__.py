@@ -1,5 +1,6 @@
 from app.db.base import (
     Base,
+    IndexingJobStatus,
     PullRequestState,
     RepositoryMemberRole,
     TaskPriority,
@@ -17,6 +18,14 @@ from app.db.models.membership import WorkspaceMembership
 from app.db.models.oauth_transaction import OAuthTransaction
 from app.db.models.pull_request import PullRequestRecord
 from app.db.models.repository import Repository
+from app.db.models.repository_intelligence import (
+    CodeSymbol,
+    FileDependency,
+    IndexingError,
+    IndexingJob,
+    RepositoryFile,
+    RepositorySnapshot,
+)
 from app.db.models.repository_member import RepositoryMember
 from app.db.models.user import User
 from app.db.models.workspace import Workspace
@@ -29,6 +38,7 @@ __all__ = [
     "TaskPriority",
     "TaskStatus",
     "PullRequestState",
+    "IndexingJobStatus",
     "User",
     "Workspace",
     "WorkspaceMembership",
@@ -42,4 +52,10 @@ __all__ = [
     "AuditLog",
     "AuthSession",
     "OAuthTransaction",
+    "IndexingJob",
+    "RepositorySnapshot",
+    "RepositoryFile",
+    "CodeSymbol",
+    "FileDependency",
+    "IndexingError",
 ]

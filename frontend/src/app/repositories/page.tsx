@@ -28,6 +28,7 @@ import {
   Loader2,
   Building2,
   ArrowRightLeft,
+  Sparkles,
 } from "lucide-react";
 
 function GitHubIcon({ className = "h-4 w-4" }: { className?: string }) {
@@ -57,6 +58,12 @@ import {
   getGitHubConnectUrl,
   refreshWorkspaceRepository,
 } from "@/lib/github";
+import {
+  RepositoryIntelligenceOverview,
+  fetchRepositoryIntelligence,
+  startIndexingJob,
+} from "@/lib/indexing";
+import { RepositoryIntelligenceModal } from "@/components/repository-intelligence-modal";
 
 export default function RepositoriesPage() {
   const [currentUser, setCurrentUser] = React.useState<CurrentUser | null>(null);
@@ -83,6 +90,14 @@ export default function RepositoriesPage() {
   const [accountConfirmation, setAccountConfirmation] = React.useState<{
     login: string | null;
   } | null>(null);
+
+  // Intelligence & Indexing States
+  const [intelligenceMap, setIntelligenceMap] = React.useState<
+    Record<string, RepositoryIntelligenceOverview | null>
+  >({});
+  const [selectedIntelRepo, setSelectedIntelRepo] = React.useState<WorkspaceRepository | null>(null);
+  const [isIntelModalOpen, setIsIntelModalOpen] = React.useState(false);
+  const [indexingLoadingId, setIndexingLoadingId] = React.useState<string | null>(null);
 
   // Active workspace (derived from selectedWorkspaceId or first workspace)
   const activeWorkspace = React.useMemo(() => {
@@ -141,6 +156,14 @@ export default function RepositoriesPage() {
           const repos = await fetchWorkspaceRepositories(initialWsId);
           if (isMounted) {
             setRepositories(repos);
+            // Fetch intelligence overview for each connected repo
+            repos.forEach((r) => {
+              fetchRepositoryIntelligence(r.id, initialWsId).then((intel) => {
+                if (isMounted) {
+                  setIntelligenceMap((prev) => ({ ...prev, [r.id]: intel }));
+                }
+              });
+            });
           }
         }
 
@@ -175,6 +198,12 @@ export default function RepositoriesPage() {
     try {
       const repos = await fetchWorkspaceRepositories(newWorkspaceId);
       setRepositories(repos);
+      // Fetch intelligence overview for each connected repo
+      repos.forEach((r) => {
+        fetchRepositoryIntelligence(r.id, newWorkspaceId).then((intel) => {
+          setIntelligenceMap((prev) => ({ ...prev, [r.id]: intel }));
+        });
+      });
     } catch {
       setNotification({
         type: "error",
@@ -332,6 +361,60 @@ export default function RepositoriesPage() {
       });
     }
   };
+
+  // Start indexing for repository
+  const handleStartIndexing = async (repo: WorkspaceRepository) => {
+    if (!activeWorkspace) return;
+    setIndexingLoadingId(repo.id);
+    try {
+      const res = await startIndexingJob(repo.id, activeWorkspace.workspace_id, repo.default_branch);
+      if (!res.ok) {
+        setNotification({
+          type: "error",
+          message: res.error || "Failed to start indexing job.",
+        });
+      } else {
+        setNotification({
+          type: "success",
+          message: `Indexing started for "${repo.name}". Analyzing code structure...`,
+        });
+        // Refresh intelligence overview
+        const intel = await fetchRepositoryIntelligence(repo.id, activeWorkspace.workspace_id);
+        setIntelligenceMap((prev) => ({ ...prev, [repo.id]: intel }));
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Network error";
+      setNotification({ type: "error", message: msg });
+    } finally {
+      setIndexingLoadingId(null);
+    }
+  };
+
+  // Polling hook for active indexing jobs
+  React.useEffect(() => {
+    if (!activeWorkspace) return;
+
+    // Check if any repository has an active job (PENDING or RUNNING)
+    const activeRepoIds = Object.keys(intelligenceMap).filter((repoId) => {
+      const intel = intelligenceMap[repoId];
+      const status = intel?.active_job?.status;
+      return status === "PENDING" || status === "RUNNING";
+    });
+
+    if (activeRepoIds.length === 0) return;
+
+    const interval = setInterval(() => {
+      activeRepoIds.forEach((repoId) => {
+        fetchRepositoryIntelligence(repoId, activeWorkspace.workspace_id).then((intel) => {
+          if (intel) {
+            setIntelligenceMap((prev) => ({ ...prev, [repoId]: intel }));
+          }
+        });
+      });
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [intelligenceMap, activeWorkspace]);
 
   // Filter connected repositories
   const filtered = repositories.filter(
@@ -732,6 +815,122 @@ export default function RepositoriesPage() {
                       <Clock className="h-3 w-3 text-slate-400 shrink-0" />
                       <span>{new Date(repo.created_at).toLocaleDateString()}</span>
                     </span>
+                  </div>
+                </div>
+
+                {/* Repository Intelligence Section */}
+                <div className="p-3 rounded-lg bg-indigo-50/50 border border-indigo-100 space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-[11px] font-semibold text-indigo-900 flex items-center gap-1.5">
+                      <Sparkles className="h-3.5 w-3.5 text-indigo-600" />
+                      Repository Intelligence
+                    </span>
+                    {(() => {
+                      const intel = intelligenceMap[repo.id];
+                      const activeJob = intel?.active_job;
+                      const snapshot = intel?.latest_snapshot;
+
+                      if (activeJob && (activeJob.status === "RUNNING" || activeJob.status === "PENDING")) {
+                        return (
+                          <Badge variant="secondary" className="text-[10px] bg-amber-50 text-amber-800 border-amber-200">
+                            <Loader2 className="h-2.5 w-2.5 mr-1 animate-spin text-amber-600" />
+                            Indexing {activeJob.progress_percent}%
+                          </Badge>
+                        );
+                      }
+                      if (snapshot) {
+                        return (
+                          <Badge variant="success" dotColor="bg-emerald-500" className="text-[10px]">
+                            Indexed
+                          </Badge>
+                        );
+                      }
+                      return (
+                        <Badge variant="secondary" className="text-[10px] text-slate-500">
+                          Not Indexed
+                        </Badge>
+                      );
+                    })()}
+                  </div>
+
+                  {(() => {
+                    const intel = intelligenceMap[repo.id];
+                    const activeJob = intel?.active_job;
+                    const snapshot = intel?.latest_snapshot;
+
+                    if (activeJob && (activeJob.status === "RUNNING" || activeJob.status === "PENDING")) {
+                      return (
+                        <div className="space-y-1">
+                          <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
+                            <div
+                              className="bg-indigo-600 h-1.5 rounded-full transition-all duration-300"
+                              style={{ width: `${activeJob.progress_percent}%` }}
+                            />
+                          </div>
+                          <p className="text-[10px] text-slate-500 font-mono truncate">
+                            {activeJob.current_step || "Processing repository tree..."}
+                          </p>
+                        </div>
+                      );
+                    }
+
+                    if (snapshot) {
+                      return (
+                        <div className="flex items-center justify-between text-[11px] text-slate-600 font-mono">
+                          <span>
+                            {snapshot.total_files} files • {snapshot.total_symbols} symbols • {snapshot.total_dependencies} deps
+                          </span>
+                          <span className="text-slate-400">
+                            commit {snapshot.commit_sha.substring(0, 7)}
+                          </span>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <p className="text-[11px] text-slate-500">
+                        Index code symbols, AST trees, and dependency manifests.
+                      </p>
+                    );
+                  })()}
+
+                  <div className="flex items-center gap-2 pt-1">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-xs h-7 flex-1 border-indigo-200 text-indigo-700 hover:bg-indigo-100/60"
+                      onClick={() => {
+                        setSelectedIntelRepo(repo);
+                        setIsIntelModalOpen(true);
+                      }}
+                    >
+                      <Sparkles className="h-3 w-3 mr-1" />
+                      Explore Intelligence
+                    </Button>
+
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={
+                        indexingLoadingId === repo.id ||
+                        intelligenceMap[repo.id]?.active_job?.status === "RUNNING" ||
+                        intelligenceMap[repo.id]?.active_job?.status === "PENDING" ||
+                        !isWorkspaceAdminOrOwner
+                      }
+                      onClick={() => handleStartIndexing(repo)}
+                      className="text-xs h-7 border-slate-200 text-slate-700 hover:bg-slate-100"
+                      title={
+                        !isWorkspaceAdminOrOwner
+                          ? "Only workspace Admins or Owners can trigger indexing"
+                          : "Index code symbols and structure"
+                      }
+                    >
+                      {indexingLoadingId === repo.id ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        "Index"
+                      )}
+                    </Button>
                   </div>
                 </div>
 
@@ -1214,6 +1413,26 @@ export default function RepositoriesPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Repository Intelligence Explorer Modal */}
+      {selectedIntelRepo && (
+        <RepositoryIntelligenceModal
+          isOpen={isIntelModalOpen}
+          onClose={() => {
+            setIsIntelModalOpen(false);
+            setSelectedIntelRepo(null);
+          }}
+          repositoryId={selectedIntelRepo.id}
+          workspaceId={activeWorkspace?.workspace_id || ""}
+          repositoryName={selectedIntelRepo.name}
+          overview={intelligenceMap[selectedIntelRepo.id] || null}
+          onReindex={() => handleStartIndexing(selectedIntelRepo)}
+          isIndexing={
+            intelligenceMap[selectedIntelRepo.id]?.active_job?.status === "RUNNING" ||
+            intelligenceMap[selectedIntelRepo.id]?.active_job?.status === "PENDING"
+          }
+        />
       )}
     </AppShell>
   );

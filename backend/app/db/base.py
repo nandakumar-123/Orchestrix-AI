@@ -80,3 +80,13 @@ class PullRequestState(enum.StrEnum):
     OPEN = "OPEN"
     CLOSED = "CLOSED"
     MERGED = "MERGED"
+
+
+class IndexingJobStatus(enum.StrEnum):
+    """Lifecycle statuses for repository intelligence indexing jobs."""
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
