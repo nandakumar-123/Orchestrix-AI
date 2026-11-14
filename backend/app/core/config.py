@@ -58,11 +58,14 @@ class Settings(BaseSettings):
     REDIS_URL: str = ""
     REDIS_TOKEN: str = ""
 
-    # Google Auth (optional at initial foundation stage)
+    # Google Auth & Session Security
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
-    GOOGLE_REDIRECT_URI: str = ""
+    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/auth/google/callback"
     GOOGLE_FRONTEND_URL: str = "http://localhost:3000"
+    SESSION_SECRET_KEY: str = "default_insecure_dev_secret_change_in_production"
+    SESSION_TTL_SECONDS: int = 60 * 60 * 24 * 7  # 7 days
+    FRONTEND_ORIGIN: str = "http://localhost:3000"
 
     @property
     def async_database_url(self) -> str:

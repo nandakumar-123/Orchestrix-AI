@@ -4,6 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import (
+    get_current_user,
+    require_workspace_membership,
+    verify_workspace_membership,
+)
 from app.api.v1.schemas import (
     DatabaseHealthResponse,
     EngineeringTaskCreate,
@@ -19,7 +24,9 @@ from app.api.v1.schemas import (
     RepositoryUpdate,
 )
 from app.core.config import settings
-from app.db.base import TaskStatus
+from app.db.base import TaskStatus, WorkspaceRole
+from app.db.models.membership import WorkspaceMembership
+from app.db.models.user import User
 from app.db.session import check_database_connection, get_db_session
 from app.services.database import (
     add_repository_member,
@@ -96,6 +103,7 @@ async def get_repositories(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db_session),
+    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.VIEWER)),
 ) -> RepositoryListResponse:
     """List all active repositories scoped to a workspace with pagination."""
     items, total = await list_repositories(db, workspace_id, limit=limit, offset=offset)
@@ -117,6 +125,7 @@ async def get_repository(
     repository_id: uuid.UUID,
     workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
     db: AsyncSession = Depends(get_db_session),
+    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.VIEWER)),
 ) -> RepositoryResponse:
     """Retrieve repository by ID, strictly enforcing workspace tenant isolation."""
     repo = await get_repository_by_id(db, workspace_id, repository_id)
@@ -138,8 +147,15 @@ async def get_repository(
 async def create_repository(
     payload: RepositoryCreate,
     db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
 ) -> RepositoryResponse:
     """Register a new repository under an authorized workspace and installation."""
+    await verify_workspace_membership(
+        db=db,
+        user_id=current_user.id,
+        workspace_id=payload.workspace_id,
+        min_role=WorkspaceRole.ADMIN,
+    )
     try:
         repo = await register_repository(
             db,
@@ -174,6 +190,7 @@ async def patch_repository(
     payload: RepositoryUpdate,
     workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
     db: AsyncSession = Depends(get_db_session),
+    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.ADMIN)),
 ) -> RepositoryResponse:
     """Update metadata for an existing repository in a workspace."""
     repo = await update_repository(
@@ -200,6 +217,7 @@ async def delete_repository(
     repository_id: uuid.UUID,
     workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
     db: AsyncSession = Depends(get_db_session),
+    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.ADMIN)),
 ) -> None:
     """Soft-delete/deactivate a repository within a workspace."""
     success = await deactivate_repository(db, workspace_id, repository_id)
@@ -222,6 +240,7 @@ async def add_member_to_repository(
     payload: RepositoryMemberCreate,
     workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
     db: AsyncSession = Depends(get_db_session),
+    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.ADMIN)),
 ) -> RepositoryMemberResponse:
     """
     Assign a workspace user to a repository with an application role (ADMIN, DEVELOPER, VIEWER).
@@ -261,6 +280,7 @@ async def get_tasks(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db_session),
+    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.VIEWER)),
 ) -> EngineeringTaskListResponse:
     """List engineering tasks scoped to a workspace with optional filters."""
     items, total = await list_engineering_tasks(
@@ -289,8 +309,15 @@ async def get_tasks(
 async def create_task(
     payload: EngineeringTaskCreate,
     db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
 ) -> EngineeringTaskResponse:
     """Create a new autonomous engineering task in a workspace."""
+    await verify_workspace_membership(
+        db=db,
+        user_id=current_user.id,
+        workspace_id=payload.workspace_id,
+        min_role=WorkspaceRole.MEMBER,
+    )
     try:
         task = await create_engineering_task(
             db,
@@ -299,7 +326,7 @@ async def create_task(
             task_type=payload.task_type,
             priority=payload.priority,
             repository_id=payload.repository_id,
-            created_by=payload.created_by,
+            created_by=payload.created_by or current_user.id,
             description=payload.description,
             assigned_agent=payload.assigned_agent,
             external_issue_id=payload.external_issue_id,
@@ -322,6 +349,7 @@ async def get_task(
     task_id: uuid.UUID,
     workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
     db: AsyncSession = Depends(get_db_session),
+    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.VIEWER)),
 ) -> EngineeringTaskResponse:
     """Retrieve an engineering task, strictly scoped to a workspace."""
     task = await get_engineering_task_by_id(db, workspace_id, task_id)
@@ -344,6 +372,7 @@ async def patch_task(
     payload: EngineeringTaskUpdate,
     workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
     db: AsyncSession = Depends(get_db_session),
+    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.MEMBER)),
 ) -> EngineeringTaskResponse:
     """Update status or assigned agent for a workspace-scoped engineering task."""
     if payload.status is None and payload.assigned_agent is None:

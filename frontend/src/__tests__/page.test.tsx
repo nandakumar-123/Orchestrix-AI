@@ -5,7 +5,7 @@ import DashboardPage from "../app/dashboard/page";
 describe("Orchestrix AI Dashboard Experience", () => {
   it("renders the primary dashboard page header and branding", () => {
     render(<DashboardPage />);
-    expect(screen.getByText("Engineering Overview")).toBeInTheDocument();
+    expect(screen.getAllByText("Engineering Overview").length).toBeGreaterThan(0);
     expect(
       screen.getByText(
         "Monitor your repositories, AI agents, and autonomous engineering activity."

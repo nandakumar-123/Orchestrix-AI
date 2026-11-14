@@ -8,6 +8,7 @@ from app.db.base import (
     WorkspaceRole,
 )
 from app.db.models.audit_log import AuditLog
+from app.db.models.auth_session import AuthSession
 from app.db.models.engineering_task import EngineeringTask
 from app.db.models.github_installation import GitHubInstallation
 from app.db.models.membership import WorkspaceMembership
@@ -34,4 +35,5 @@ __all__ = [
     "EngineeringTask",
     "PullRequestRecord",
     "AuditLog",
+    "AuthSession",
 ]

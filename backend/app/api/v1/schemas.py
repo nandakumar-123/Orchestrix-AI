@@ -3,7 +3,13 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.db.base import RepositoryMemberRole, TaskPriority, TaskStatus, TaskType
+from app.db.base import (
+    RepositoryMemberRole,
+    TaskPriority,
+    TaskStatus,
+    TaskType,
+    WorkspaceRole,
+)
 
 # -----------------------------------------------------------------------------
 # Common Schemas
@@ -169,3 +175,39 @@ class EngineeringTaskListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+# -----------------------------------------------------------------------------
+# Authentication & User Schemas
+# -----------------------------------------------------------------------------
+
+
+class UserWorkspaceMembershipResponse(BaseModel):
+    """User membership within a workspace."""
+
+    workspace_id: uuid.UUID
+    name: str
+    slug: str
+    role: WorkspaceRole
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CurrentUserResponse(BaseModel):
+    """Current authenticated user profile schema."""
+
+    id: uuid.UUID
+    email: str
+    full_name: str | None = None
+    avatar_url: str | None = None
+    email_verified: bool = False
+    workspaces: list[UserWorkspaceMembershipResponse] = Field(default_factory=list)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class LogoutResponse(BaseModel):
+    """Logout response schema."""
+
+    status: str = "ok"
+    message: str = "Successfully logged out"

@@ -88,9 +88,37 @@ Workspace (Multi-Tenant Root)
 4. **Audit Log Immutability**:
    - Audit records are append-only.
    - Credentials, API tokens, passwords, and secrets are automatically redacted (`[REDACTED]`).
-5. **Current Security Boundaries & Future Work**:
-   - Implemented: Database-level composite foreign-key enforcement, service-level tenant scoping, parameter validation, secret redaction, and error masking.
-   - Planned (Future Phases): Google OAuth 2.0 user authentication, session-based `WorkspaceMembership` authorization dependency, and GitHub App JWT/installation token issuance.
+5. **Multi-User Authentication & Workspace Authorization**:
+   - Implemented: Google OAuth 2.0 OpenID Connect with PKCE (S256), Google JWKS validation, and email verification checks.
+   - Implemented: Server-side opaque session management stored as SHA-256 digests in `auth_sessions` with HttpOnly cookies.
+   - Implemented: Route-level `require_workspace_membership` dependency enforcing role hierarchy (`VIEWER <= MEMBER <= ADMIN <= OWNER`). Cross-workspace access returns `403 Forbidden`.
+   - Planned (Future Phases): GitHub App installation token issuance and webhook dispatch.
+
+## Authentication & Authorization (Google OAuth 2.0 & Session Management)
+
+Orchestrix AI implements production-grade authentication with tenant-isolated workspace authorization:
+
+1. **Login Initiation (`GET /auth/google/login`)**:
+   - Generates cryptographically secure `state`, `nonce`, and PKCE `code_verifier`/`code_challenge` (S256).
+   - Encodes parameters into a signed, tamper-proof, short-lived transit JWT cookie (`orchestrix_oauth_transit`).
+   - Redirects user to Google OAuth consent screen.
+2. **Callback Handling (`GET /auth/google/callback`)**:
+   - Verifies transit cookie and state match (preventing CSRF).
+   - Exchanges authorization code and PKCE verifier for Google tokens.
+   - Validates Google ID token against Google's JWKS (`https://www.googleapis.com/oauth2/v3/certs`) and checks `email_verified == True`.
+   - Provisions or matches user account:
+     - Resolves user by `google_sub` or verified `email`.
+     - Automatically provisions an isolated personal workspace with `OWNER` role for first-time users.
+   - Generates a 32-byte cryptographically secure random session token.
+   - Stores SHA-256 digest in `auth_sessions.token_hash`.
+   - Issues `orchestrix_session` HttpOnly, SameSite=Lax, Secure cookie.
+   - Clears transit cookie and redirects to `/dashboard`.
+3. **Current User Profile (`GET /api/v1/auth/me`)**:
+   - Validates session token in DB, updates `last_accessed_at`.
+   - Returns user profile, verification status, and all workspace memberships with application roles.
+4. **Session Termination (`POST /api/v1/auth/logout`)**:
+   - Revokes session in database (`is_revoked = True`).
+   - Clears `orchestrix_session` cookie.
 
 ## Secret Isolation
 

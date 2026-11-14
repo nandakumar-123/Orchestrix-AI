@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import api_router
+from app.api.v1.auth import google_oauth_router
 from app.core.config import settings
 from app.db.session import close_database_connection, get_async_engine
 
@@ -39,6 +40,7 @@ def create_app() -> FastAPI:
     )
 
     application.include_router(api_router, prefix=settings.API_V1_STR)
+    application.include_router(google_oauth_router)
 
     @application.get("/", tags=["root"])
     async def root() -> dict[str, str]:

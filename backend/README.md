@@ -38,9 +38,16 @@ The database architecture is built on **Neon Serverless PostgreSQL** using **SQL
 - **Audit Log Immutability**:
   - Audit records are append-only. No service endpoints or CRUD functions expose update or delete operations on `audit_logs`.
   - Secrets and credentials (tokens, private keys, passwords) are automatically redacted upon ingestion (`[REDACTED]`).
-- **Current Security Status and API Boundaries**:
-  - The API endpoints require `workspace_id` and validate cross-tenant entity consistency.
-  - *Security Limitation*: A supplied `workspace_id` is NOT authorization. Production authentication (e.g. Google OAuth) and session-based `WorkspaceMembership` permission checks are planned for upcoming phases.
+- **Authentication & Workspace Authorization**:
+  - **Google OAuth 2.0 PKCE Flow**: Uses OpenID Connect with PKCE (S256), state and nonce verification, and server-side JWKS validation.
+  - **Server-Side Opaque Sessions**: 32-byte cryptographically secure random session tokens stored as SHA-256 digests in `auth_sessions`, issued via HttpOnly, SameSite=Lax, Secure cookies.
+  - **Automatic Provisioning**: First-time sign-ins automatically provision an isolated default workspace with `OWNER` membership.
+  - **Route-Level Role Authorization**: FastAPI `require_workspace_membership` dependency enforces workspace membership and role hierarchy (`VIEWER <= MEMBER <= ADMIN <= OWNER`). Cross-workspace access is strictly rejected with `403 Forbidden`.
+  - **Endpoints**:
+    - `GET /auth/google/login`: Initiates OAuth consent redirect with signed transit cookie.
+    - `GET /auth/google/callback`: Validates state/nonce/PKCE, exchanges tokens, provisions user/workspace, issues session cookie.
+    - `GET /api/v1/auth/me`: Returns current authenticated user profile, verified status, and workspaces with roles.
+    - `POST /api/v1/auth/logout`: Revokes server-side session in database and clears session cookie.
 
 ---
 

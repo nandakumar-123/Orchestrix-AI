@@ -9,6 +9,7 @@ from app.db.base import Base, utc_now
 
 if TYPE_CHECKING:
     from app.db.models.audit_log import AuditLog
+    from app.db.models.auth_session import AuthSession
     from app.db.models.engineering_task import EngineeringTask
     from app.db.models.membership import WorkspaceMembership
     from app.db.models.repository_member import RepositoryMember
@@ -28,6 +29,17 @@ class User(Base):
         String(255),
         unique=True,
         index=True,
+        nullable=False,
+    )
+    google_sub: Mapped[str | None] = mapped_column(
+        String(255),
+        unique=True,
+        index=True,
+        nullable=True,
+    )
+    email_verified: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
         nullable=False,
     )
     full_name: Mapped[str | None] = mapped_column(
@@ -76,6 +88,11 @@ class User(Base):
     audit_logs: Mapped[list["AuditLog"]] = relationship(
         "AuditLog",
         back_populates="actor",
+    )
+    sessions: Mapped[list["AuthSession"]] = relationship(
+        "AuthSession",
+        back_populates="user",
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self) -> str:

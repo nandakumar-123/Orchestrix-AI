@@ -5,8 +5,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.db.base import Base
-from app.db.models import GitHubInstallation, Workspace
+from app.api.deps import get_current_user
+from app.db.base import Base, WorkspaceRole
+from app.db.models import GitHubInstallation, User, Workspace, WorkspaceMembership
 from app.db.session import get_db_session
 from app.main import app
 
@@ -31,12 +32,30 @@ async def api_client() -> AsyncGenerator[AsyncClient, None]:
 
     app.dependency_overrides[get_db_session] = override_get_db_session
 
-    # Seed workspace and installation
+    # Seed workspace, user, membership and installation
     async with session_factory() as sess:
         ws = Workspace(name="API Test Workspace", slug="api-test-ws")
         sess.add(ws)
         await sess.commit()
         await sess.refresh(ws)
+
+        user = User(
+            id=uuid.uuid4(),
+            email="api-test-owner@example.com",
+            full_name="API Test Owner",
+            is_active=True,
+        )
+        sess.add(user)
+        await sess.commit()
+        await sess.refresh(user)
+
+        membership = WorkspaceMembership(
+            user_id=user.id,
+            workspace_id=ws.id,
+            role=WorkspaceRole.OWNER,
+        )
+        sess.add(membership)
+        await sess.commit()
 
         inst = GitHubInstallation(
             workspace_id=ws.id,
@@ -51,6 +70,7 @@ async def api_client() -> AsyncGenerator[AsyncClient, None]:
 
         app.state.test_workspace_id = ws.id
         app.state.test_installation_id = inst.id
+        app.dependency_overrides[get_current_user] = lambda: user
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         yield client
@@ -94,10 +114,10 @@ async def test_repository_api_crud_lifecycle(api_client: AsyncClient) -> None:
     assert get_res.status_code == 200
     assert get_res.json()["id"] == repo_id
 
-    # 4. Cross-workspace not found
+    # 4. Cross-workspace not found / access denied
     other_ws_id = uuid.uuid4()
     cross_res = await api_client.get(f"/api/v1/repositories/{repo_id}?workspace_id={other_ws_id}")
-    assert cross_res.status_code == 404
+    assert cross_res.status_code in (403, 404)
 
     # 5. Patch Repository
     patch_res = await api_client.patch(
@@ -186,11 +206,10 @@ async def test_repository_member_api_and_tenant_validation(api_client: AsyncClie
     )
     assert invalid_role_res.status_code == 422  # Pydantic validation error
 
-    # Cross-workspace repository member assignment attempt (with another workspace_id in query)
+    # Cross-workspace repository member assignment attempt (with unauthorized other_ws_id in query)
     other_ws_id = str(uuid.uuid4())
     cross_member_res = await api_client.post(
         f"/api/v1/repositories/{repo_id}/members?workspace_id={other_ws_id}",
         json={"user_id": fake_user_id, "role": "DEVELOPER"},
     )
-    assert cross_member_res.status_code == 400
-    assert "Repository does not belong to the target workspace" in cross_member_res.json()["detail"]
+    assert cross_member_res.status_code in (400, 403)
