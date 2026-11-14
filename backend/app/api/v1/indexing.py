@@ -328,6 +328,9 @@ async def get_supported_languages(
                     package_name=spec.package_name,
                     available=parser is not None,
                     extensions=spec.extensions,
+                    category=spec.category,
+                    extraction_mode=spec.extraction_mode,
+                    adapter_name=spec.adapter.__class__.__name__,
                 )
             )
 

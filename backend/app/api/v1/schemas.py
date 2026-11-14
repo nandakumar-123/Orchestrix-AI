@@ -335,6 +335,9 @@ class SupportedLanguageCapability(BaseModel):
     package_name: str
     available: bool
     extensions: list[str]
+    category: str = "general"
+    extraction_mode: str = "validated"
+    adapter_name: str = ""
 
 
 class SupportedLanguagesResponse(BaseModel):
