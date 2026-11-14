@@ -65,6 +65,7 @@ describe("Repository Intelligence & Indexing Integration", () => {
     latest_snapshot: mockSnapshotOverview,
     active_job: null,
     last_indexed_at: "2026-03-01T13:00:00Z",
+    detected_frameworks: ["FastAPI", "React", "Next.js"],
   };
 
   beforeEach(() => {
@@ -75,6 +76,47 @@ describe("Repository Intelligence & Indexing Integration", () => {
       github_login: "orchestrix-org",
     });
     vi.spyOn(githubModule, "fetchWorkspaceRepositories").mockResolvedValue([mockRepo]);
+    vi.spyOn(indexingModule, "fetchRepositoryFiles").mockResolvedValue({
+      files: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
+    vi.spyOn(indexingModule, "fetchRepositorySymbols").mockResolvedValue({
+      symbols: [],
+      total: 0,
+      limit: 150,
+      offset: 0,
+    });
+    vi.spyOn(indexingModule, "fetchRepositoryDependencies").mockResolvedValue({
+      dependencies: [],
+      total: 0,
+      limit: 150,
+      offset: 0,
+    });
+    vi.spyOn(indexingModule, "fetchSupportedLanguages").mockResolvedValue({
+      total_supported: 40,
+      languages: [
+        {
+          name: "Python",
+          package_name: "tree_sitter_python",
+          available: true,
+          extensions: [".py", ".pyi"],
+        },
+        {
+          name: "Go",
+          package_name: "tree_sitter_go",
+          available: true,
+          extensions: [".go"],
+        },
+        {
+          name: "Rust",
+          package_name: "tree_sitter_rust",
+          available: true,
+          extensions: [".rs"],
+        },
+      ],
+    });
   });
 
   it("displays repository intelligence badge and indexed summary", async () => {
@@ -207,6 +249,36 @@ describe("Repository Intelligence & Indexing Integration", () => {
     await waitFor(() => {
       expect(screen.getByText("fastapi")).toBeInTheDocument();
       expect(screen.getByText("^0.115.0")).toBeInTheDocument();
+    });
+  });
+
+  it("renders detected frameworks and explores parser registry in modal", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(indexingModule, "fetchRepositoryIntelligence").mockResolvedValue(mockIntelligence);
+
+    render(<RepositoriesPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Explore Intelligence/i })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: /Explore Intelligence/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("repository-intelligence-modal")).toBeInTheDocument();
+      expect(screen.getByText("FastAPI")).toBeInTheDocument();
+      expect(screen.getByText("React")).toBeInTheDocument();
+      expect(screen.getByText("Next.js")).toBeInTheDocument();
+    });
+
+    // Switch to Registry tab
+    await user.click(screen.getByRole("button", { name: /Registry/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Universal Parser Registry/i)).toBeInTheDocument();
+      expect(screen.getByText("Rust")).toBeInTheDocument();
+      expect(screen.getByText("Go")).toBeInTheDocument();
+      expect(screen.getAllByText("Python").length).toBeGreaterThanOrEqual(1);
     });
   });
 });

@@ -38,6 +38,7 @@ export interface RepositorySnapshotOverview {
   total_dependencies: number;
   languages_summary: Record<string, { files: number; lines: number }>;
   entry_points: string[];
+  detected_frameworks?: string[];
   created_at: string;
 }
 
@@ -46,7 +47,20 @@ export interface RepositoryIntelligenceOverview {
   workspace_id: string;
   latest_snapshot?: RepositorySnapshotOverview | null;
   active_job?: IndexingJob | null;
+  detected_frameworks?: string[];
   last_indexed_at?: string | null;
+}
+
+export interface SupportedLanguageCapability {
+  name: string;
+  package_name: string;
+  available: boolean;
+  extensions: string[];
+}
+
+export interface SupportedLanguagesResponse {
+  total_supported: number;
+  languages: SupportedLanguageCapability[];
 }
 
 export interface RepositoryFileItem {
@@ -131,8 +145,18 @@ export async function startIndexingJob(
 }
 
 /**
- * Fetch the latest intelligence overview and active job for a repository.
+ * Fetch list of all supported languages and parser availability in Orchestrix registry.
  */
+export async function fetchSupportedLanguages(): Promise<SupportedLanguagesResponse | null> {
+  try {
+    const res = await fetchWithAuth("/api/v1/repositories/intelligence/supported-languages");
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchRepositoryIntelligence(
   repositoryId: string,
   workspaceId: string,

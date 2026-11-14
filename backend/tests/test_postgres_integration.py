@@ -57,6 +57,13 @@ async def pg_session() -> AsyncGenerator[AsyncSession, None]:
         pytest.skip("PostgreSQL is not configured in settings.async_database_url")
 
     engine = create_async_engine(settings.async_database_url, echo=False)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        await engine.dispose()
+        pytest.skip(f"PostgreSQL database is unreachable: {exc}")
+
     session_factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 
     async with session_factory() as sess:
@@ -312,6 +319,12 @@ async def test_postgres_concurrent_oauth_transaction_consumption() -> None:
         pytest.skip("PostgreSQL is not configured in settings.async_database_url")
 
     engine = create_async_engine(settings.async_database_url, echo=False)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        await engine.dispose()
+        pytest.skip(f"PostgreSQL database is unreachable: {exc}")
     session_factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 
     try:
@@ -353,6 +366,12 @@ async def test_postgres_concurrent_user_provisioning_integrity() -> None:
         pytest.skip("PostgreSQL is not configured in settings.async_database_url")
 
     engine = create_async_engine(settings.async_database_url, echo=False)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        await engine.dispose()
+        pytest.skip(f"PostgreSQL database is unreachable: {exc}")
     session_factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 
     test_sub = f"pg-concurrent-sub-{uuid.uuid4().hex[:8]}"

@@ -20,12 +20,15 @@ from app.api.v1.schemas import (
     RepositoryFileResponse,
     RepositoryFilesListResponse,
     RepositoryIntelligenceResponse,
+    SupportedLanguageCapability,
+    SupportedLanguagesResponse,
 )
 from app.db.base import WorkspaceRole
 from app.db.models.membership import WorkspaceMembership
 from app.db.models.repository import Repository
 from app.db.models.user import User
 from app.db.session import get_db_session
+from app.services.code_intelligence import PARSER_REGISTRY
 from app.services.indexing_service import (
     cancel_indexing_job,
     create_indexing_job,
@@ -179,6 +182,9 @@ async def get_repository_intelligence(
             last_indexed_at=repo.last_indexed_at,
         )
 
+    structure = snapshot.structure_summary or {}
+    frameworks = structure.get("frameworks", []) if isinstance(structure, dict) else []
+
     return RepositoryIntelligenceResponse(
         repository_id=repository_id,
         workspace_id=workspace_id,
@@ -192,6 +198,7 @@ async def get_repository_intelligence(
         languages_summary=snapshot.languages_summary,
         structure_summary=snapshot.structure_summary,
         entry_points=snapshot.entry_points,
+        detected_frameworks=frameworks,
         last_indexed_at=repo.last_indexed_at or snapshot.created_at,
     )
 
@@ -294,4 +301,37 @@ async def get_dependencies(
     return FileDependencyListResponse(
         dependencies=[FileDependencyResponse.model_validate(d) for d in deps],
         total=total,
+    )
+
+
+@indexing_router.get(
+    "/intelligence/supported-languages",
+    response_model=SupportedLanguagesResponse,
+    summary="List all supported languages and parser availability",
+)
+async def get_supported_languages(
+    _user: User = Depends(get_current_user),
+) -> Any:
+    """
+    Query the modular parser registry to retrieve all registered programming,
+    markup, and styling languages along with their platform availability.
+    """
+    lang_names = PARSER_REGISTRY.get_supported_languages()
+    caps: list[SupportedLanguageCapability] = []
+    for name in lang_names:
+        spec = PARSER_REGISTRY.get_language_spec(name)
+        if spec:
+            parser = PARSER_REGISTRY.get_parser(name)
+            caps.append(
+                SupportedLanguageCapability(
+                    name=spec.canonical_name,
+                    package_name=spec.package_name,
+                    available=parser is not None,
+                    extensions=spec.extensions,
+                )
+            )
+
+    return SupportedLanguagesResponse(
+        total_supported=len(caps),
+        languages=caps,
     )

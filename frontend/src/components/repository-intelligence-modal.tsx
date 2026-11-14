@@ -6,9 +6,11 @@ import {
   FileDependencyItem,
   RepositoryFileItem,
   RepositoryIntelligenceOverview,
+  SupportedLanguagesResponse,
   fetchRepositoryDependencies,
   fetchRepositoryFiles,
   fetchRepositorySymbols,
+  fetchSupportedLanguages,
 } from "@/lib/indexing";
 import {
   X,
@@ -21,6 +23,7 @@ import {
   CheckCircle2,
   GitCommit,
   Clock,
+  Globe2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -47,7 +50,10 @@ export function RepositoryIntelligenceModal({
   onReindex,
   isIndexing,
 }: RepositoryIntelligenceModalProps) {
-  const [activeTab, setActiveTab] = React.useState<"overview" | "files" | "symbols" | "dependencies">("overview");
+  const [activeTab, setActiveTab] = React.useState<
+    "overview" | "files" | "symbols" | "dependencies" | "languages"
+  >("overview");
+  const [supportedLangs, setSupportedLangs] = React.useState<SupportedLanguagesResponse | null>(null);
 
   // Tab Data States
   const [files, setFiles] = React.useState<RepositoryFileItem[]>([]);
@@ -76,6 +82,9 @@ export function RepositoryIntelligenceModal({
       } else if (activeTab === "dependencies") {
         const res = await fetchRepositoryDependencies(repositoryId, workspaceId, { limit: 150 });
         if (isMounted && res) setDependencies(res.dependencies);
+      } else if (activeTab === "languages") {
+        const res = await fetchSupportedLanguages();
+        if (isMounted && res) setSupportedLangs(res);
       }
       if (isMounted) setLoadingTab(false);
     }
@@ -225,6 +234,20 @@ export function RepositoryIntelligenceModal({
             <Package className="h-3.5 w-3.5" />
             Dependencies ({snapshot?.total_dependencies ?? 0})
           </button>
+          <button
+            onClick={() => {
+              setActiveTab("languages");
+              setSearchQuery("");
+            }}
+            className={`py-3 flex items-center gap-1.5 border-b-2 font-medium transition-colors ${
+              activeTab === "languages"
+                ? "border-indigo-600 text-indigo-600 font-semibold"
+                : "border-transparent text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            <Globe2 className="h-3.5 w-3.5" />
+            Registry ({supportedLangs?.total_supported ?? "40+"})
+          </button>
         </div>
 
         {/* Tab Content Body */}
@@ -335,6 +358,29 @@ export function RepositoryIntelligenceModal({
                       ))}
                     </div>
                   </div>
+
+                  {/* Detected Frameworks */}
+                  {((overview?.detected_frameworks && overview.detected_frameworks.length > 0) ||
+                    (overview?.latest_snapshot?.detected_frameworks &&
+                      overview.latest_snapshot.detected_frameworks.length > 0)) && (
+                    <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs space-y-2">
+                      <h4 className="text-xs font-semibold text-slate-800 uppercase tracking-wider">
+                        Recognized Frameworks & Technologies
+                      </h4>
+                      <div className="flex flex-wrap gap-2">
+                        {(overview.detected_frameworks || overview.latest_snapshot?.detected_frameworks || []).map((fw) => (
+                          <Badge
+                            key={fw}
+                            variant="secondary"
+                            className="text-xs bg-indigo-50 text-indigo-800 border-indigo-200 font-medium py-1 px-2.5"
+                          >
+                            <Sparkles className="h-3 w-3 mr-1 text-indigo-600" />
+                            {fw}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Entry Point Candidates */}
                   {snapshot.entry_points && snapshot.entry_points.length > 0 && (
@@ -566,6 +612,68 @@ export function RepositoryIntelligenceModal({
                         >
                           {d.dependency_type}
                         </Badge>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB 5: SUPPORTED LANGUAGES REGISTRY */}
+          {activeTab === "languages" && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-xs font-semibold text-slate-800 uppercase tracking-wider">
+                    Universal Parser Registry
+                  </h4>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Multi-language AST grammar engines verified and active in Orchestrix backend.
+                  </p>
+                </div>
+                <Badge variant="outline" className="text-xs font-mono">
+                  {supportedLangs?.total_supported ?? 40} Languages Active
+                </Badge>
+              </div>
+
+              {loadingTab ? (
+                <div className="p-8 text-center">
+                  <Loader2 className="h-6 w-6 animate-spin text-indigo-600 mx-auto" />
+                  <p className="text-xs text-slate-500 mt-2">Loading registry capabilities...</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                  {(supportedLangs?.languages || []).map((lang) => (
+                    <div
+                      key={lang.name}
+                      className="p-3 bg-white rounded-xl border border-slate-200/90 shadow-2xs space-y-1.5"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-xs text-slate-900">{lang.name}</span>
+                        {lang.available ? (
+                          <span className="inline-flex items-center text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full font-medium border border-emerald-200">
+                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 mr-1" />
+                            Ready
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center text-[10px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full font-medium">
+                            Fallback
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[10px] font-mono text-slate-400 truncate">
+                        {lang.package_name}
+                      </p>
+                      <div className="flex flex-wrap gap-1 pt-1">
+                        {lang.extensions.slice(0, 4).map((ext) => (
+                          <span
+                            key={ext}
+                            className="text-[10px] font-mono text-slate-600 bg-slate-50 px-1.5 py-0.5 rounded border border-slate-100"
+                          >
+                            {ext}
+                          </span>
+                        ))}
                       </div>
                     </div>
                   ))}

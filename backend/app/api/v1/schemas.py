@@ -328,6 +328,22 @@ class IndexingJobListResponse(BaseModel):
     total: int
 
 
+class SupportedLanguageCapability(BaseModel):
+    """Extraction capabilities and platform availability for a programming language."""
+
+    name: str
+    package_name: str
+    available: bool
+    extensions: list[str]
+
+
+class SupportedLanguagesResponse(BaseModel):
+    """List of all registered languages and parser capabilities."""
+
+    total_supported: int
+    languages: list[SupportedLanguageCapability]
+
+
 class RepositoryIntelligenceResponse(BaseModel):
     """Repository structural intelligence overview."""
 
@@ -343,6 +359,7 @@ class RepositoryIntelligenceResponse(BaseModel):
     languages_summary: dict[str, Any] | None = None
     structure_summary: dict[str, Any] | None = None
     entry_points: list[str] | None = None
+    detected_frameworks: list[str] = Field(default_factory=list)
     last_indexed_at: datetime | None = None
 
 

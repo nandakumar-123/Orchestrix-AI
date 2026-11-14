@@ -19,8 +19,9 @@ from app.db.models.repository_intelligence import (
     RepositorySnapshot,
 )
 from app.db.session import get_async_session_factory
-from app.services.code_intelligence import analyze_code_content
+from app.services.code_intelligence import PARSER_REGISTRY, analyze_code_content
 from app.services.dependency_intelligence import parse_dependency_manifest
+from app.services.framework_detection import detect_frameworks
 from app.services.github import decrypt_token, get_user_github_account
 from app.services.repository_ingestion import (
     detect_language,
@@ -310,6 +311,7 @@ async def _execute_indexing_job_background(
                     lambda: {"files": 0, "lines": 0}
                 )
                 all_paths: list[str] = []
+                all_dep_names: set[str] = set()
                 detected_entry_points: list[str] = []
 
                 total_lines_count = 0
@@ -381,17 +383,8 @@ async def _execute_indexing_job_background(
                     await db.flush()
                     await db.refresh(repo_file)
 
-                    # Code Intelligence via Tree-sitter
-                    if lang in (
-                        "Python",
-                        "JavaScript",
-                        "TypeScript",
-                        "TSX",
-                        "JSX",
-                        "Java",
-                        "C",
-                        "C++",
-                    ):
+                    # Code Intelligence via modular Tree-sitter Registry
+                    if lang and PARSER_REGISTRY.get_language_spec(lang):
                         file_intel = analyze_code_content(content_bytes, lang)
                         if file_intel.parse_error:
                             error = IndexingError(
@@ -446,6 +439,7 @@ async def _execute_indexing_job_background(
                             manifest_text = content_bytes.decode("utf-8", errors="replace")
                             manifest_deps = parse_dependency_manifest(path, manifest_text)
                             for m_dep in manifest_deps:
+                                all_dep_names.add(m_dep.name)
                                 file_dep = FileDependency(
                                     workspace_id=workspace_id,
                                     repository_id=repository_id,
@@ -485,6 +479,10 @@ async def _execute_indexing_job_background(
                 await db.commit()
 
                 structure_summary = build_directory_tree(all_paths)
+                detected_frameworks = detect_frameworks(all_paths, all_dep_names)
+                if structure_summary is None:
+                    structure_summary = {}
+                structure_summary["frameworks"] = detected_frameworks
 
                 snapshot.total_files = len(eligible_files)
                 snapshot.total_lines = total_lines_count
