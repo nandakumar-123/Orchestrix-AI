@@ -403,6 +403,8 @@ async def preview_change_impact(
         target_type=res.target_type,
         risk_level=res.risk_level,
         risk_score=res.risk_score,
+        score_type=res.score_type,
+        score_label=res.score_label,
         reasons=res.reasons,
         direct_dependents=res.direct_dependents,
         indirect_dependents=res.indirect_dependents,

@@ -439,7 +439,7 @@ describe("Repository Intelligence & Indexing Integration", () => {
 
     // Verify Impact Preview results displayed
     await waitFor(() => {
-      expect(screen.getByText(/Impact Analysis & Risk/i)).toBeInTheDocument();
+      expect(screen.getByText(/Blast Radius & Structural Exposure Score/i)).toBeInTheDocument();
       expect(screen.getByText(/HIGH \(55\/100\)/i)).toBeInTheDocument();
       expect(screen.getByText(/Exposes 1 public API endpoint/i)).toBeInTheDocument();
     });

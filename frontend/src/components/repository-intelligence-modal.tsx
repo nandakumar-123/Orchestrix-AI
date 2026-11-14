@@ -1064,16 +1064,19 @@ export function RepositoryIntelligenceModal({
 
                       {/* Impact Preview Section if calculated */}
                       {impactPreview && (
-                        <div className="p-3 rounded-lg border border-indigo-200 bg-indigo-50/40 space-y-2.5 text-xs">
+                        <div className="p-3 rounded-lg border border-indigo-200 bg-indigo-50/40 space-y-2 text-xs">
                           <div className="flex items-center justify-between">
                             <span className="font-semibold text-slate-800 flex items-center gap-1.5">
                               <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
-                              Impact Analysis & Risk
+                              Blast Radius & Structural Exposure Score
                             </span>
                             <Badge className={`text-[10px] ${getRiskBadgeStyle(impactPreview.risk_level)}`}>
                               {impactPreview.risk_level} ({impactPreview.risk_score}/100)
                             </Badge>
                           </div>
+                          <p className="text-[10px] text-slate-500 leading-tight">
+                            Heuristic structural exposure metric based on graph topology (callers, dependencies, API exposure). Not a statistical regression prediction.
+                          </p>
 
                           <ul className="space-y-1 text-[11px] text-slate-700 list-disc list-inside">
                             {impactPreview.reasons.map((r, idx) => (

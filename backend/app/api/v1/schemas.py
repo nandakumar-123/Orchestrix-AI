@@ -655,13 +655,28 @@ class ImpactPreviewRequest(BaseModel):
 
 
 class ImpactPreviewResponse(BaseModel):
-    """Detailed blast radius and risk analysis for proposed code modifications."""
+    """
+    Blast Radius & Structural Exposure Score for proposed code modifications.
+
+    Note: The score (0.0 to 100.0) and tiers (LOW, MEDIUM, HIGH, CRITICAL) represent
+    a heuristic structural exposure metric based on graph topology, dependency depth,
+    callers, exposed public routes, and test verification. It is NOT an empirical or
+    statistical regression prediction.
+    """
 
     target_id: str
     target_name: str
     target_type: str
-    risk_level: str
-    risk_score: float
+    risk_level: str = Field(..., description="Exposure tier: LOW | MEDIUM | HIGH | CRITICAL")
+    risk_score: float = Field(
+        ..., description="Blast Radius & Structural Exposure Score (0.0 to 100.0)"
+    )
+    score_type: str = Field(
+        default="heuristic_structural_exposure", description="Classification of metric"
+    )
+    score_label: str = Field(
+        default="Blast Radius & Structural Exposure Score", description="Human-readable score label"
+    )
     reasons: list[str]
     direct_dependents: list[dict[str, Any]]
     indirect_dependents: list[dict[str, Any]]

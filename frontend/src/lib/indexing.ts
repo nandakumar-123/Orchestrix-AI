@@ -500,6 +500,8 @@ export interface ImpactPreviewResponse {
   target_type: string;
   risk_level: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
   risk_score: number;
+  score_type?: string;
+  score_label?: string;
   reasons: string[];
   direct_dependents: Array<{
     id: string;

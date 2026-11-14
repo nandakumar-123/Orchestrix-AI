@@ -107,7 +107,12 @@ class MultiLanguageRelationshipExtractor:
                 source_id=repo_node_id,
                 target_id=snap_node_id,
                 type="CONTAINS",
-                properties={"snapshot_id": self.snapshot_id},
+                properties={
+                    "snapshot_id": self.snapshot_id,
+                    "status": "resolved",
+                    "confidence": 1.0,
+                    "evidence": "contains_snapshot",
+                },
             )
         )
 
@@ -136,7 +141,12 @@ class MultiLanguageRelationshipExtractor:
                     source_id=snap_node_id,
                     target_id=file_node_id,
                     type="CONTAINS",
-                    properties={"snapshot_id": self.snapshot_id},
+                    properties={
+                        "snapshot_id": self.snapshot_id,
+                        "status": "resolved",
+                        "confidence": 1.0,
+                        "evidence": f.path,
+                    },
                 )
             )
 
@@ -176,7 +186,12 @@ class MultiLanguageRelationshipExtractor:
                         source_id=parent_file_id,
                         target_id=sym_node_id,
                         type="CONTAINS",
-                        properties={"snapshot_id": self.snapshot_id},
+                        properties={
+                            "snapshot_id": self.snapshot_id,
+                            "status": "resolved",
+                            "confidence": 1.0,
+                            "evidence": s.name,
+                        },
                     )
                 )
 
@@ -190,7 +205,12 @@ class MultiLanguageRelationshipExtractor:
                             source_id=parent_class_node_id,
                             target_id=sym_node_id,
                             type="CONTAINS",
-                            properties={"snapshot_id": self.snapshot_id},
+                            properties={
+                                "snapshot_id": self.snapshot_id,
+                                "status": "resolved",
+                                "confidence": 1.0,
+                                "evidence": f"{s.parent_symbol_name}.{s.name}",
+                            },
                         )
                     )
 
@@ -216,6 +236,8 @@ class MultiLanguageRelationshipExtractor:
                                 "snapshot_id": self.snapshot_id,
                                 "status": "resolved",
                                 "raw_statement": dep.name,
+                                "confidence": 1.0,
+                                "evidence": dep.name,
                             },
                         )
                     )
@@ -241,6 +263,8 @@ class MultiLanguageRelationshipExtractor:
                                 "snapshot_id": self.snapshot_id,
                                 "status": "resolved",
                                 "raw_statement": dep.name,
+                                "confidence": 0.85,
+                                "evidence": dep.name,
                             },
                         )
                     )
@@ -266,6 +290,9 @@ class MultiLanguageRelationshipExtractor:
                             "snapshot_id": self.snapshot_id,
                             "version_spec": dep.version_spec,
                             "dependency_type": dep.dependency_type,
+                            "status": "resolved",
+                            "confidence": 1.0,
+                            "evidence": dep.name,
                         },
                     )
                 )
@@ -300,6 +327,7 @@ class MultiLanguageRelationshipExtractor:
                                             "status": resolved.status,
                                             "resolution_type": resolved.resolution_type,
                                             "confidence": resolved.confidence,
+                                            "evidence": s.signature or base_name,
                                         },
                                     )
                                 )
@@ -324,6 +352,7 @@ class MultiLanguageRelationshipExtractor:
                                     "status": resolved.status,
                                     "resolution_type": resolved.resolution_type,
                                     "confidence": resolved.confidence,
+                                    "evidence": s.signature or base_name,
                                 },
                             )
                         )
@@ -350,6 +379,7 @@ class MultiLanguageRelationshipExtractor:
                                             "status": resolved.status,
                                             "resolution_type": resolved.resolution_type,
                                             "confidence": resolved.confidence,
+                                            "evidence": s.signature or iface_name,
                                         },
                                     )
                                 )
@@ -363,13 +393,16 @@ class MultiLanguageRelationshipExtractor:
             if not caller_node_id:
                 continue
 
-            # Check if this function is a Test Case
+            # Check if this function is a Test Case (Python, TS/JS, Go, Java)
             is_test = (
                 s.name.startswith("test_")
+                or s.name.startswith("Test")  # Go convention: TestXxx
                 or s.name.endswith("_test")
                 or "/tests/" in s.file_path
                 or s.file_path.startswith("tests/")
-                or s.file_path.endswith((".test.ts", ".test.js", ".spec.ts", ".spec.js"))
+                or s.file_path.endswith(
+                    (".test.ts", ".test.js", ".spec.ts", ".spec.js", "_test.go")
+                )
             )
             if is_test:
                 test_node_id = f"test:{self.snapshot_id}:{s.file_path}:{s.name}"
@@ -391,12 +424,22 @@ class MultiLanguageRelationshipExtractor:
                         source_id=caller_node_id,
                         target_id=test_node_id,
                         type="DEFINES",
-                        properties={"snapshot_id": self.snapshot_id},
+                        properties={
+                            "snapshot_id": self.snapshot_id,
+                            "status": "resolved",
+                            "confidence": 1.0,
+                            "evidence": s.name,
+                        },
                     )
                 )
 
-                # Heuristic: test_xyz -> tests symbol xyz
-                target_sym_candidate = s.name.removeprefix("test_").removesuffix("_test")
+                # Heuristic: test_xyz / TestXyz -> tests symbol xyz / Xyz
+                target_sym_candidate = s.name
+                if target_sym_candidate.startswith("Test"):
+                    target_sym_candidate = target_sym_candidate.removeprefix("Test")
+                elif target_sym_candidate.startswith("test_"):
+                    target_sym_candidate = target_sym_candidate.removeprefix("test_")
+                target_sym_candidate = target_sym_candidate.removesuffix("_test")
                 if target_sym_candidate:
                     resolved_test_target = self.resolver.resolve_symbol(
                         source_file=s.file_path,
@@ -412,6 +455,7 @@ class MultiLanguageRelationshipExtractor:
                                     "snapshot_id": self.snapshot_id,
                                     "status": resolved_test_target.status,
                                     "confidence": resolved_test_target.confidence,
+                                    "evidence": s.name,
                                 },
                             )
                         )
@@ -470,6 +514,7 @@ class MultiLanguageRelationshipExtractor:
                                     "status": resolved_call.status,
                                     "resolution_type": resolved_call.resolution_type,
                                     "confidence": resolved_call.confidence,
+                                    "evidence": called_name,
                                 },
                             )
                         )
@@ -511,7 +556,12 @@ class MultiLanguageRelationshipExtractor:
                                 source_id=caller_node_id,
                                 target_id=endpoint_id,
                                 type="EXPOSES",
-                                properties={"snapshot_id": self.snapshot_id},
+                                properties={
+                                    "snapshot_id": self.snapshot_id,
+                                    "status": "resolved",
+                                    "confidence": 0.95,
+                                    "evidence": f"{http_method} {route_path}",
+                                },
                             )
                         )
 
@@ -548,7 +598,12 @@ class MultiLanguageRelationshipExtractor:
                                     source_id=class_node_id,
                                     target_id=table_id,
                                     type="DEFINES",
-                                    properties={"snapshot_id": self.snapshot_id},
+                                    properties={
+                                        "snapshot_id": self.snapshot_id,
+                                        "status": "resolved",
+                                        "confidence": 1.0,
+                                        "evidence": tbl_name,
+                                    },
                                 )
                             )
 

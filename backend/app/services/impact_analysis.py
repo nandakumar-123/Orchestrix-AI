@@ -17,11 +17,22 @@ logger = logging.getLogger("orchestrix.impact_analysis")
 
 @dataclass
 class ImpactAnalysisResult:
+    """
+    Result of evaluating the blast radius and structural exposure of a code symbol or file.
+
+    Note: The risk_score (0.0 to 100.0) and risk_level (LOW, MEDIUM, HIGH, CRITICAL)
+    represent a heuristic structural exposure metric derived from graph topology,
+    call depth, dependent counts, exposed public routes, and automated test coverage.
+    It is not an empirical statistical prediction of regression or bug probability.
+    """
+
     target_id: str
     target_name: str
     target_type: str
     risk_level: str  # "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
     risk_score: float  # 0.0 to 100.0
+    score_type: str = "heuristic_structural_exposure"
+    score_label: str = "Blast Radius & Structural Exposure Score"
     reasons: list[str] = field(default_factory=list)
     direct_dependents: list[dict[str, Any]] = field(default_factory=list)
     indirect_dependents: list[dict[str, Any]] = field(default_factory=list)
@@ -37,6 +48,8 @@ class ImpactAnalysisResult:
             "target_type": self.target_type,
             "risk_level": self.risk_level,
             "risk_score": self.risk_score,
+            "score_type": self.score_type,
+            "score_label": self.score_label,
             "reasons": self.reasons,
             "direct_dependents": self.direct_dependents,
             "indirect_dependents": self.indirect_dependents,
@@ -49,9 +62,12 @@ class ImpactAnalysisResult:
 
 class ImpactAnalysisEngine:
     """
-    Computes code change blast radius and impact intelligence using the Knowledge Graph.
+    Computes code change blast radius and structural exposure score using the Knowledge Graph.
     Identifies direct callers, downstream dependents, exposed API routes,
     database models, and recommended test cases to verify.
+
+    Clarification: This engine evaluates structural exposure (a heuristic metric based
+    on graph topology and exposure vectors). It does NOT predict statistical regression risk.
     """
 
     def __init__(self, provider: BaseGraphProvider) -> None:

@@ -340,17 +340,25 @@ class Neo4jGraphProvider(BaseGraphProvider):
         uri: str,
         username: str,
         password: str,
-        database: str = "neo4j",
+        database: str | None = None,
     ) -> None:
         self.uri = uri
         self.username = username
         self.password = password
-        self.database = database
+        # If database is "neo4j" or empty, setting None allows Neo4j driver to
+        # route directly to the user's home database (vital for Neo4j Aura instances)
+        self.database = database if (database and database.lower() != "neo4j") else None
         self._driver: Any = None
 
     @property
     def provider_name(self) -> str:
         return "neo4j"
+
+    def _session_kwargs(self) -> dict[str, Any]:
+        """Return session kwargs, omitting database if None to use server default/home database."""
+        if self.database:
+            return {"database": self.database}
+        return {}
 
     def _get_driver(self) -> Any:
         if self._driver is None:
@@ -372,11 +380,12 @@ class Neo4jGraphProvider(BaseGraphProvider):
     async def health_check(self) -> bool:
         try:
             driver = self._get_driver()
-            async with driver.session(database=self.database) as session:
+            async with driver.session(**self._session_kwargs()) as session:
                 result = await session.run("RETURN 1 AS alive")
                 record = await result.single()
                 return record is not None and record["alive"] == 1
         except Exception as e:
+            # If database not found or certificate verify failed with neo4j+s, log detailed reason
             logger.warning(f"Neo4j health check failed: {e}")
             return False
 
@@ -389,7 +398,7 @@ class Neo4jGraphProvider(BaseGraphProvider):
         self, cypher: str, parameters: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
         driver = self._get_driver()
-        async with driver.session(database=self.database) as session:
+        async with driver.session(**self._session_kwargs()) as session:
             result = await session.run(cypher, parameters or {})
             records = await result.data()
             return cast(list[dict[str, Any]], records)
@@ -413,7 +422,7 @@ class Neo4jGraphProvider(BaseGraphProvider):
         raw_batch = [n.to_dict() for n in nodes]
         for i in range(0, len(raw_batch), batch_size):
             chunk = raw_batch[i : i + batch_size]
-            async with driver.session(database=self.database) as session:
+            async with driver.session(**self._session_kwargs()) as session:
                 await session.run(cypher, {"batch": chunk})
                 total_upserted += len(chunk)
 
@@ -440,7 +449,7 @@ class Neo4jGraphProvider(BaseGraphProvider):
         raw_batch = [r.to_dict() for r in relationships]
         for i in range(0, len(raw_batch), batch_size):
             chunk = raw_batch[i : i + batch_size]
-            async with driver.session(database=self.database) as session:
+            async with driver.session(**self._session_kwargs()) as session:
                 await session.run(cypher, {"batch": chunk})
                 total_upserted += len(chunk)
 
@@ -454,7 +463,7 @@ class Neo4jGraphProvider(BaseGraphProvider):
         WHERE n.snapshot_id = $snapshot_id
         DETACH DELETE n
         """
-        async with driver.session(database=self.database) as session:
+        async with driver.session(**self._session_kwargs()) as session:
             result = await session.run(cypher, {"snapshot_id": sid})
             summary = await result.consume()
             return int(summary.counters.nodes_deleted)
@@ -478,7 +487,7 @@ class Neo4jGraphProvider(BaseGraphProvider):
         RETURN collect(DISTINCT n) AS nodes, collect(DISTINCT {source_id: n.id, target_id: m.id, type: r.type, properties: properties(r)}) AS edges
         """
 
-        async with driver.session(database=self.database) as session:
+        async with driver.session(**self._session_kwargs()) as session:
             result = await session.run(
                 cypher,
                 {
@@ -547,7 +556,9 @@ def get_graph_provider() -> BaseGraphProvider:
             uri.startswith("bolt://")
             or uri.startswith("neo4j://")
             or uri.startswith("neo4j+s://")
+            or uri.startswith("neo4j+ssc://")
             or uri.startswith("bolt+s://")
+            or uri.startswith("bolt+ssc://")
         )
         and settings.NEO4J_USERNAME
         and settings.NEO4J_PASSWORD
@@ -557,7 +568,9 @@ def get_graph_provider() -> BaseGraphProvider:
                 uri=uri,
                 username=settings.NEO4J_USERNAME,
                 password=settings.NEO4J_PASSWORD,
-                database=settings.NEO4J_DATABASE or "neo4j",
+                database=settings.NEO4J_DATABASE
+                if (settings.NEO4J_DATABASE and settings.NEO4J_DATABASE.lower() != "neo4j")
+                else None,
             )
             return _CACHED_GRAPH_PROVIDER
         except Exception as e:
