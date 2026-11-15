@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -14,6 +16,7 @@ from app.db.models.testpilot import (
     TestPilotExecution,
     TestPilotSuite,
     TestPilotTestType,
+    TestResultOutcome,
     TestSuiteStatus,
 )
 from app.db.models.user import User
@@ -23,7 +26,11 @@ from app.services.devpilot.llm_provider import (
     LLMCompletionResponse,
     LLMProviderManager,
 )
-from app.services.impactmind.test_runner import ControlledTestRunner, TestExecutionResult
+from app.services.impactmind.test_runner import (
+    ALLOWED_TEST_EXECUTABLES,
+    ControlledTestRunner,
+    TestExecutionResult,
+)
 from app.services.testpilot.coverage import CoverageAnalyzer
 from app.services.testpilot.detector import FrameworkDetector
 from app.services.testpilot.diagnoser import FailureDiagnoser
@@ -538,3 +545,166 @@ index e69de29..b1b2b3b 100644
     assert result.risk_exposure_score >= 0.0
     assert "calculator.py" in result.change_summary
     assert isinstance(result.selected_tests, list)
+
+
+# ==============================================================================
+# 7. MULTI-FRAMEWORK EXECUTION & SECURITY HARDENING TESTS
+# ==============================================================================
+
+
+def test_supported_frameworks_default_command_resolution() -> None:
+    """Verify that all 5 supported frameworks resolve to safe, valid commands."""
+    runner = TestPilotRunner()
+
+    expected = {
+        "pytest": "pytest -v",
+        "unittest": "python -m unittest discover -s tests -v",
+        "vitest": "npx vitest run",
+        "jest": "npx jest --colors=false",
+        "mocha": "npx mocha --no-colors",
+    }
+
+    for fw, expected_cmd in expected.items():
+        resolved = runner._resolve_default_command(fw)
+        assert resolved == expected_cmd
+        # Verify that the command prefix is allowed by ControlledTestRunner
+        is_allowed = any(resolved.startswith(exe) for exe in ALLOWED_TEST_EXECUTABLES)
+        assert is_allowed
+
+
+def test_parse_individual_results_across_all_frameworks() -> None:
+    """Verify that stdout output parsing works accurately for all 5 frameworks."""
+    runner = TestPilotRunner()
+
+    # 1. Pytest
+    pytest_out = """
+tests/test_math.py::test_addition PASSED
+tests/test_math.py::test_subtraction FAILED
+tests/test_math.py::test_division SKIPPED
+"""
+    r_pytest = runner._parse_individual_results(pytest_out, "")
+    assert len(r_pytest) == 3
+    assert r_pytest[0].status == TestResultOutcome.PASSED
+    assert r_pytest[1].status == TestResultOutcome.FAILED
+    assert r_pytest[2].status == TestResultOutcome.SKIPPED
+
+    # 2. Python unittest
+    unittest_out = """
+test_add (tests.test_math.TestMath) ... ok
+test_sub (tests.test_math.TestMath) ... FAIL
+test_div (tests.test_math.TestMath) ... ERROR
+test_skip (tests.test_math.TestMath) ... skipped 'not supported'
+"""
+    r_unittest = runner._parse_individual_results(unittest_out, "")
+    assert len(r_unittest) == 4
+    assert r_unittest[0].test_name == "tests.test_math.TestMath.test_add"
+    assert r_unittest[0].status == TestResultOutcome.PASSED
+    assert r_unittest[1].status == TestResultOutcome.FAILED
+    assert r_unittest[2].status == TestResultOutcome.FAILED
+    assert r_unittest[3].status == TestResultOutcome.SKIPPED
+
+    # 3. Jest
+    jest_out = """
+PASS src/math.test.js
+  ✓ adds numbers (5 ms)
+  ✕ fails on negative (2 ms)
+  ○ skipped edge case
+"""
+    r_jest = runner._parse_individual_results(jest_out, "")
+    assert len(r_jest) == 3
+    assert r_jest[0].test_name == "adds numbers"
+    assert r_jest[0].status == TestResultOutcome.PASSED
+    assert r_jest[1].test_name == "fails on negative"
+    assert r_jest[1].status == TestResultOutcome.FAILED
+    assert r_jest[2].test_name == "skipped edge case"
+    assert r_jest[2].status == TestResultOutcome.SKIPPED
+
+    # 4. Mocha
+    mocha_out = """
+  Math Operations
+    ✓ should return 42 (10ms)
+    1) should throw on invalid input:
+"""
+    r_mocha = runner._parse_individual_results(mocha_out, "")
+    assert len(r_mocha) == 2
+    assert r_mocha[0].status == TestResultOutcome.PASSED
+    assert r_mocha[1].status == TestResultOutcome.FAILED
+
+    # 5. Vitest
+    vitest_out = """
+ ✓ tests/unit.test.ts > fast add
+ ✗ tests/unit.test.ts > failed case
+"""
+    r_vitest = runner._parse_individual_results(vitest_out, "")
+    assert len(r_vitest) == 2
+    assert r_vitest[0].status == TestResultOutcome.PASSED
+    assert r_vitest[1].status == TestResultOutcome.FAILED
+
+
+def test_npm_test_script_validation_security() -> None:
+    """Verify ControlledTestRunner prevents arbitrary code execution via npm test scripts."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # 1. Missing package.json
+        with pytest.raises(ValueError, match="package.json not found"):
+            ControlledTestRunner.validate_npm_script(tmp_dir, "test")
+
+        # 2. Missing scripts.test
+        pkg_file = os.path.join(tmp_dir, "package.json")
+        with open(pkg_file, "w", encoding="utf-8") as f:
+            f.write('{"name": "test-pkg", "scripts": {"build": "tsc"}}')
+        with pytest.raises(ValueError, match="No 'test' script defined"):
+            ControlledTestRunner.validate_npm_script(tmp_dir, "test")
+
+        # 3. Disallowed shell chaining in scripts.test
+        with open(pkg_file, "w", encoding="utf-8") as f:
+            f.write('{"scripts": {"test": "vitest run && rm -rf /"}}')
+        with pytest.raises(ValueError, match="shell operator '&&' is prohibited"):
+            ControlledTestRunner.validate_npm_script(tmp_dir, "test")
+
+        # 4. Disallowed arbitrary runner (e.g. bash, node arbitrary.js)
+        with open(pkg_file, "w", encoding="utf-8") as f:
+            f.write('{"scripts": {"test": "bash run_tests.sh"}}')
+        with pytest.raises(ValueError, match="unauthorized runner 'bash'"):
+            ControlledTestRunner.validate_npm_script(tmp_dir, "test")
+
+        with open(pkg_file, "w", encoding="utf-8") as f:
+            f.write('{"scripts": {"test": "node evil_script.js"}}')
+        with pytest.raises(ValueError, match="must use the native test runner"):
+            ControlledTestRunner.validate_npm_script(tmp_dir, "test")
+
+        # 5. Disallowed forbidden flags
+        with open(pkg_file, "w", encoding="utf-8") as f:
+            f.write('{"scripts": {"test": "jest --setupFiles exploit.js"}}')
+        with pytest.raises(ValueError, match="Disallowed flag '--setupFiles'"):
+            ControlledTestRunner.validate_npm_script(tmp_dir, "test")
+
+        # 6. Valid safe test scripts
+        valid_scripts = [
+            "vitest run",
+            "jest --colors=false",
+            "mocha --no-colors",
+            "node --test",
+        ]
+        for script in valid_scripts:
+            with open(pkg_file, "w", encoding="utf-8") as f:
+                f.write(f'{{"scripts": {{"test": "{script}"}}}}')
+            ControlledTestRunner.validate_npm_script(tmp_dir, "test")  # Must not raise
+
+
+def test_forbidden_flags_rejection_across_frameworks() -> None:
+    """Verify that dangerous flags across pytest, vitest, jest, and mocha are blocked."""
+    dangerous_commands = [
+        "pytest -c evil.ini",
+        "pytest --config=evil.ini",
+        "pytest -o python_files=exploit.py",
+        "npx jest --setupFiles exploit.js",
+        "npx mocha -r exploit.js",
+        "npx mocha --require exploit.js",
+        "npx vitest --exec exploit.js",
+        "npx vitest --eval 'process.exit(1)'",
+        "pytest tests/../../etc/passwd",
+    ]
+
+    for cmd in dangerous_commands:
+        with pytest.raises(ValueError):
+            ControlledTestRunner.sanitize_command(cmd)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import json
 import logging
 import os
 import re
@@ -21,11 +22,18 @@ logger = logging.getLogger("orchestrix.impactmind.test_runner")
 ALLOWED_TEST_EXECUTABLES = {
     "pytest",
     "python -m pytest",
+    "python3 -m pytest",
     "uv run pytest",
-    "npm test",
-    "npm run test",
+    "python -m unittest",
+    "python3 -m unittest",
     "npx vitest",
     "vitest",
+    "npx jest",
+    "jest",
+    "npx mocha",
+    "mocha",
+    "npm test",
+    "npm run test",
     "go test",
 }
 
@@ -42,9 +50,26 @@ FORBIDDEN_FLAG_PATTERNS = {
     "--assert",
     "--basetemp",
     "--rootdir",
-    # Vitest / Jest execution hooks
+    # Vitest / Jest execution hooks & arbitrary module loading
     "--exec",
     "--eval",
+    "-e",
+    "--setupFiles",
+    "--setupFilesAfterEnv",
+    "--transform",
+    "--globalSetup",
+    "--globalTeardown",
+    "--runner",
+    "--testResultsProcessor",
+    # Mocha execution hooks
+    "-r",
+    "--require",
+    "--ui",
+    "--file",
+    "--package",
+    # Node / Python code execution
+    "--inspect",
+    "--inspect-brk",
     # Go test execution hooks
     "-exec",
     "-toolexec",
@@ -393,7 +418,99 @@ class ControlledTestRunner:
         """Mask sensitive tokens, passwords, and API keys from test output logs."""
         if not text:
             return ""
-        return SECRET_REDACTION_PATTERN.sub(r"[REDACTED_SECRET]", text)
+        from app.services.secureflow.redaction import redact_secrets as sf_redact_secrets
+
+        return sf_redact_secrets(SECRET_REDACTION_PATTERN.sub(r"[REDACTED_SECRET]", text))
+
+    @classmethod
+    def validate_npm_script(cls, working_dir: str, script_name: str = "test") -> None:
+        """
+        Validate that package.json defines an approved, safe test script.
+        Prevents arbitrary command execution via npm test.
+        """
+        pkg_json_path = os.path.join(working_dir, "package.json")
+        if not os.path.isfile(pkg_json_path):
+            raise ValueError(
+                f"Cannot execute 'npm {script_name}': package.json not found in workspace"
+            )
+
+        try:
+            with open(pkg_json_path, encoding="utf-8") as f:
+                pkg_data = json.load(f)
+        except Exception as e:
+            raise ValueError(f"Invalid package.json in workspace: {e}") from e
+
+        scripts = pkg_data.get("scripts", {})
+        if not isinstance(scripts, dict) or script_name not in scripts:
+            raise ValueError(
+                f"No '{script_name}' script defined in package.json. Arbitrary execution blocked."
+            )
+
+        raw_script = str(scripts[script_name]).strip()
+        if not raw_script:
+            raise ValueError(f"Empty '{script_name}' script in package.json")
+
+        # Disallow shell operators in package.json test script
+        disallowed_shell_chars = [";", "&&", "||", "|", "`", "$", ">", "<", "\n", "\r", "\0"]
+        for ch in disallowed_shell_chars:
+            if ch in raw_script:
+                raise ValueError(
+                    f"Unsafe npm {script_name} script '{raw_script}': shell operator '{ch}' is prohibited"
+                )
+
+        # Parse script tokens
+        tokens = shlex.split(raw_script, posix=os.name != "nt")
+        if not tokens:
+            raise ValueError(f"Invalid npm {script_name} script")
+
+        # Approved test runners allowed inside package.json "test" script
+        approved_runners = {
+            "vitest",
+            "jest",
+            "mocha",
+            "pytest",
+            "python",
+            "python3",
+            "ava",
+            "tape",
+            "c8",
+            "nyc",
+            "node",
+            "npx",
+        }
+
+        base_cmd = tokens[0].lower().replace(".exe", "").replace(".cmd", "")
+        if base_cmd not in approved_runners:
+            raise ValueError(
+                f"Unsafe npm test script invokes unauthorized runner '{tokens[0]}'. "
+                f"Approved runners: {sorted(approved_runners)}"
+            )
+
+        # If runner is node, require that it runs node --test
+        if base_cmd == "node" and (len(tokens) < 2 or tokens[1] != "--test"):
+            raise ValueError(
+                "npm test scripts invoking 'node' must use the native test runner ('node --test')"
+            )
+
+        # If runner is npx, check the runner being invoked
+        if base_cmd == "npx" and len(tokens) >= 2:
+            npx_runner = tokens[1].lower()
+            if npx_runner not in {"vitest", "jest", "mocha", "ava", "tape"}:
+                raise ValueError(
+                    f"npx in npm test script invokes unauthorized runner '{tokens[1]}'"
+                )
+
+        # Check for forbidden flags in the package.json script tokens
+        for token in tokens:
+            for forbidden in FORBIDDEN_FLAG_PATTERNS:
+                if token == forbidden or token.startswith(f"{forbidden}="):
+                    raise ValueError(
+                        f"Disallowed flag '{token}' in package.json '{script_name}' script"
+                    )
+            if ".." in token:
+                raise ValueError(
+                    f"Path traversal ('..') is prohibited in package.json '{script_name}' script"
+                )
 
     @classmethod
     def build_test_command(
@@ -447,6 +564,10 @@ class ControlledTestRunner:
         cmd_args = self.sanitize_command(command)
         safe_working_dir = self.validate_working_directory(working_dir)
         isolated_env = self.build_isolated_environment()
+
+        # If running npm test or npm run test, validate package.json test script
+        if any(command.strip().startswith(npm_cmd) for npm_cmd in ("npm test", "npm run test")):
+            self.validate_npm_script(safe_working_dir, "test")
 
         # Clamp timeout
         timeout_seconds = max(1.0, min(300.0, timeout_seconds))

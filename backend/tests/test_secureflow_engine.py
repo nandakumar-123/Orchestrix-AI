@@ -689,3 +689,131 @@ async def test_devpilot_remediation_bridge_scrubs_secrets_and_preserves_approval
     # Verify finding is linked to task
     await test_session.refresh(finding)
     assert finding.devpilot_task_id == devpilot_task.id
+
+
+# ==============================================================================
+# 9. SCANNER SECURITY, PATH TRAVERSAL & LEAKAGE PREVENTION TESTS
+# ==============================================================================
+
+
+@pytest.mark.asyncio
+async def test_dependency_scanner_security_path_traversal() -> None:
+    """Verify DependencyScanner blocks path traversal and nonexistent directories."""
+    scanner = DependencyScanner()
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # Rejects path traversal in requirements_file
+        with pytest.raises(ValueError, match="Path traversal"):
+            await scanner.scan_python_dependencies(
+                root_dir=tmp_dir,
+                requirements_file="../../etc/passwd",
+            )
+
+    # Rejects nonexistent root directory
+    with pytest.raises(FileNotFoundError):
+        await scanner.scan_python_dependencies(root_dir="/nonexistent_dir_12345")
+
+    with pytest.raises(FileNotFoundError):
+        await scanner.scan_npm_dependencies(root_dir="/nonexistent_dir_12345")
+
+
+@pytest.mark.asyncio
+async def test_sast_scanner_security_config_injection() -> None:
+    """Verify SASTScanner blocks config injection and path traversal."""
+    scanner = SASTScanner()
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # Rejects command injection in custom_config
+        with pytest.raises(ValueError, match="Invalid or unsafe Semgrep config"):
+            await scanner.scan_directory(
+                root_dir=tmp_dir,
+                custom_config="auto; rm -rf /",
+            )
+
+        # Rejects path traversal in custom_config
+        with pytest.raises(ValueError, match="Invalid or unsafe Semgrep config"):
+            await scanner.scan_directory(
+                root_dir=tmp_dir,
+                custom_config="../../etc/semgrep.yml",
+            )
+
+    # Rejects nonexistent root directory
+    with pytest.raises(FileNotFoundError):
+        await scanner.scan_directory(root_dir="/nonexistent_dir_12345")
+
+
+@pytest.mark.asyncio
+async def test_raw_secrets_never_enter_findings_or_scan_events(
+    test_session: AsyncSession, seed_data: dict[str, Any]
+) -> None:
+    """Verify that raw credentials can NEVER enter finding fields or event logs."""
+    repo = seed_data["repo_a"]
+    manager = FindingManager()
+    service = SecureFlowService()
+
+    scan = SecureFlowScan(
+        workspace_id=repo.workspace_id,
+        repository_id=repo.id,
+        scan_type="FULL",
+        status=SecureFlowScanStatus.RUNNING,
+    )
+    test_session.add(scan)
+    await test_session.commit()
+
+    # Raw secret in all finding fields
+    secret_title = f"API Key leak: {SYNTHETIC_LEAK_TOKEN}"
+    secret_desc = f"Hardcoded credential {SYNTHETIC_LEAK_TOKEN} in source"
+    secret_evidence = f"const key = '{SYNTHETIC_LEAK_TOKEN}';"
+    secret_rec = f"Revoke token {SYNTHETIC_LEAK_TOKEN} immediately"
+
+    finding_dto = NormalizedFinding(
+        scanner="secret-scanner",
+        category="SECRET",
+        severity=FindingSeverity.CRITICAL,
+        confidence=1.0,
+        rule_id="SECRET-LEAK-TEST",
+        title=secret_title,
+        description=secret_desc,
+        redacted_evidence=secret_evidence,
+        remediation_recommendation=secret_rec,
+        file_path="app/config.js",
+        line_start=5,
+    )
+
+    persisted = await manager.persist_and_reconcile_findings(
+        db=test_session,
+        workspace_id=repo.workspace_id,
+        repository_id=repo.id,
+        scan_id=scan.id,
+        new_findings=[finding_dto],
+    )
+    assert len(persisted) == 1
+    f_db = persisted[0]
+
+    # Verify NO column in the DB contains the raw secret!
+    assert SYNTHETIC_LEAK_TOKEN not in f_db.title
+    assert SYNTHETIC_LEAK_TOKEN not in f_db.description
+    assert SYNTHETIC_LEAK_TOKEN not in (f_db.redacted_evidence or "")
+    assert SYNTHETIC_LEAK_TOKEN not in (f_db.remediation_recommendation or "")
+    assert "[REDACTED_SECRET]" in f_db.title
+    assert "[REDACTED_SECRET]" in f_db.description
+
+    # Test audit events logging never leaks raw secrets
+    await service._log_event(
+        db=test_session,
+        scan_id=scan.id,
+        event_type="AUDIT_TEST",
+        message=f"Processing secret {SYNTHETIC_LEAK_TOKEN}",
+        details={"token": SYNTHETIC_LEAK_TOKEN, "env": "prod"},
+    )
+
+    stmt = select(SecureFlowScanEvent).where(
+        SecureFlowScanEvent.scan_id == scan.id,
+        SecureFlowScanEvent.event_type == "AUDIT_TEST",
+    )
+    event_db = (await test_session.execute(stmt)).scalar_one()
+    assert SYNTHETIC_LEAK_TOKEN not in event_db.message
+    assert "[REDACTED_SECRET]" in event_db.message
+    assert SYNTHETIC_LEAK_TOKEN not in json.dumps(event_db.details)
+    assert event_db.details is not None
+    assert event_db.details["token"] == "[REDACTED_SECRET]"

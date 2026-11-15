@@ -15,6 +15,7 @@ from app.db.models.secureflow import (
 )
 from app.services.secureflow.dependency_scanner import DependencyScanner
 from app.services.secureflow.finding_manager import FindingManager
+from app.services.secureflow.redaction import redact_data_structure, redact_secrets
 from app.services.secureflow.remediation_bridge import DevPilotRemediationBridge
 from app.services.secureflow.sast_scanner import SASTScanner
 from app.services.secureflow.schemas import (
@@ -261,8 +262,8 @@ class SecureFlowService:
         event = SecureFlowScanEvent(
             scan_id=scan_id,
             event_type=event_type,
-            message=message,
-            details=details or {},
+            message=redact_secrets(message),
+            details=redact_data_structure(details or {}),
             created_at=utc_now(),
         )
         db.add(event)

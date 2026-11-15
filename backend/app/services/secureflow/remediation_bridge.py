@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utc_now
 from app.db.models.devpilot import DevPilotTask
 from app.db.models.secureflow import SecureFlowFinding
-from app.services.devpilot.orchestrator import DevPilotOrchestrator
 from app.services.secureflow.exceptions import SecureFlowError
 from app.services.secureflow.redaction import redact_secrets
 from app.services.secureflow.schemas import RemediationTaskResult
+
+if TYPE_CHECKING:
+    from app.services.devpilot.orchestrator import DevPilotOrchestrator
 
 logger = logging.getLogger("orchestrix.secureflow.remediation_bridge")
 
@@ -25,7 +28,12 @@ class DevPilotRemediationBridge:
     """
 
     def __init__(self, devpilot_orchestrator: DevPilotOrchestrator | None = None) -> None:
-        self.devpilot_orchestrator = devpilot_orchestrator or DevPilotOrchestrator()
+        if devpilot_orchestrator is None:
+            from app.services.devpilot.orchestrator import DevPilotOrchestrator
+
+            self.devpilot_orchestrator = DevPilotOrchestrator()
+        else:
+            self.devpilot_orchestrator = devpilot_orchestrator
 
     async def create_remediation_task(
         self,

@@ -26,11 +26,16 @@ from app.services.testpilot.schemas import IndividualTestResult, TestExecutionSu
 
 logger = logging.getLogger("orchestrix.testpilot.runner")
 
-# Regex patterns to parse individual test outcomes from pytest / vitest stdout
+# Regex patterns to parse individual test outcomes from test frameworks
 PYTEST_TEST_LINE_PATTERN = re.compile(
     r"^([\w\./\-\\]+::[\w\d_\-\[\]]+)\s+(PASSED|FAILED|SKIPPED|XFAIL|ERROR)", re.MULTILINE
 )
-VITEST_TEST_LINE_PATTERN = re.compile(r"^[√✓×✗]\s+(.+?)(?:\s+\(\d+ms\))?$", re.MULTILINE)
+UNITTEST_TEST_LINE_PATTERN = re.compile(
+    r"^([\w_]+)\s+\(([\w\.\-_]+)\)\s+\.\.\.\s+(ok|FAIL|ERROR|skipped)", re.MULTILINE
+)
+JS_TEST_LINE_PATTERN = re.compile(r"^\s*([✓√✕×✗○])\s+(.+?)(?:\s+\(\d+\s*m?s\))?$", re.MULTILINE)
+MOCHA_PASS_PATTERN = re.compile(r"^\s*([✓✔])\s+(.+?)(?:\s+\(\d+\s*m?s\))?$", re.MULTILINE)
+MOCHA_FAIL_PATTERN = re.compile(r"^\s*(\d+)\)\s+(.+?):", re.MULTILINE)
 
 
 class TestPilotRunner:
@@ -89,6 +94,9 @@ class TestPilotRunner:
 
         try:
             # Stage test files into workspace
+            if suite.framework == "unittest":
+                self.workspace_manager.write_isolated_file(exec_task_id, "tests/__init__.py", "")
+
             for case in suite.cases:
                 ext = ".py" if suite.framework in ("pytest", "unittest") else ".test.ts"
                 safe_name = re.sub(r"[^\w\-_]", "_", case.name)
@@ -172,21 +180,24 @@ class TestPilotRunner:
             self.workspace_manager.cleanup_workspace(exec_task_id)
 
     def _resolve_default_command(self, framework: str) -> str:
-        if framework in ("pytest", "unittest"):
+        if framework == "pytest":
             return "pytest -v"
+        elif framework == "unittest":
+            return "python -m unittest discover -s tests -v"
         elif framework == "vitest":
             return "npx vitest run"
         elif framework == "jest":
-            return "npx jest"
+            return "npx jest --colors=false"
         elif framework == "mocha":
-            return "npx mocha"
+            return "npx mocha --no-colors"
         return "pytest -v"
 
     def _parse_individual_results(self, stdout: str, stderr: str) -> list[IndividualTestResult]:
-        """Parse structured test outcomes from runner output."""
+        """Parse structured test outcomes from runner output across supported frameworks."""
         results: list[IndividualTestResult] = []
+        full_output = f"{stdout}\n{stderr}"
 
-        # Pytest verbose line parsing
+        # 1. Pytest verbose line parsing
         for match in PYTEST_TEST_LINE_PATTERN.finditer(stdout):
             test_path = match.group(1).strip()
             raw_outcome = match.group(2).upper()
@@ -204,24 +215,64 @@ class TestPilotRunner:
                 )
             )
 
+        # 2. Python unittest line parsing
         if not results:
-            # Vitest line parsing
-            for line in stdout.splitlines():
-                line_str = line.strip()
-                if line_str.startswith(("✓", "√")):
+            for match in UNITTEST_TEST_LINE_PATTERN.finditer(full_output):
+                test_method = match.group(1).strip()
+                test_class = match.group(2).strip()
+                outcome = match.group(3).lower()
+                status = TestResultOutcome.PASSED
+                if outcome in ("fail", "error"):
+                    status = TestResultOutcome.FAILED
+                elif outcome == "skipped":
+                    status = TestResultOutcome.SKIPPED
+
+                results.append(
+                    IndividualTestResult(
+                        test_name=f"{test_class}.{test_method}",
+                        status=status,
+                        duration_ms=0,
+                    )
+                )
+
+        # 3. Mocha line parsing (checked when Mocha numbered failures are present)
+        if not results:
+            mocha_fails = list(MOCHA_FAIL_PATTERN.finditer(stdout))
+            if mocha_fails:
+                for match in MOCHA_PASS_PATTERN.finditer(stdout):
                     results.append(
                         IndividualTestResult(
-                            test_name=line_str.lstrip("✓√ ").strip(),
+                            test_name=match.group(2).strip(),
                             status=TestResultOutcome.PASSED,
+                            duration_ms=0,
                         )
                     )
-                elif line_str.startswith(("×", "✗")):
+                for match in mocha_fails:
                     results.append(
                         IndividualTestResult(
-                            test_name=line_str.lstrip("×✗ ").strip(),
+                            test_name=match.group(2).strip(),
                             status=TestResultOutcome.FAILED,
-                            failure_message=line_str,
+                            duration_ms=0,
                         )
                     )
+
+        # 4. JavaScript test runner line parsing (Jest / Vitest / Mocha pass-only)
+        if not results:
+            for match in JS_TEST_LINE_PATTERN.finditer(stdout):
+                marker = match.group(1)
+                tname = match.group(2).strip()
+                status = TestResultOutcome.PASSED
+                if marker in ("✕", "×", "✗"):
+                    status = TestResultOutcome.FAILED
+                elif marker in ("○", "skip", "skipped"):
+                    status = TestResultOutcome.SKIPPED
+
+                results.append(
+                    IndividualTestResult(
+                        test_name=tname,
+                        status=status,
+                        duration_ms=0,
+                    )
+                )
 
         return results

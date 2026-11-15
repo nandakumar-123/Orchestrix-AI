@@ -5,10 +5,13 @@ import json
 import logging
 import os
 import shutil
+import subprocess
+from typing import Any
 
 import httpx
 
 from app.db.models.secureflow import FindingSeverity, SecureFlowFinding
+from app.services.secureflow.redaction import redact_secrets
 from app.services.secureflow.schemas import DependencyScanResult, NormalizedFinding
 
 logger = logging.getLogger("orchestrix.secureflow.dependency_scanner")
@@ -56,6 +59,16 @@ class DependencyScanner:
                 error="pip-audit is not installed or available in environment",
             )
 
+        # Validate working directory and input paths
+        root_dir = os.path.abspath(root_dir)
+        if not os.path.isdir(root_dir):
+            raise FileNotFoundError(f"Root directory does not exist: {root_dir}")
+
+        if requirements_file and ".." in requirements_file:
+            raise ValueError(
+                f"Path traversal ('..') is prohibited in requirements_file: {requirements_file}"
+            )
+
         # Locate manifest file
         target_file = None
         if requirements_file and os.path.exists(os.path.join(root_dir, requirements_file)):
@@ -79,12 +92,19 @@ class DependencyScanner:
         full_path = os.path.join(root_dir, target_file)
         cmd = [shutil.which("pip-audit") or "pip-audit", "-r", full_path, "-f", "json"]
 
+        proc = None
         try:
+            extra_kwargs: dict[str, Any] = {}
+            if os.name == "nt":
+                extra_kwargs["creationflags"] = getattr(
+                    subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
+                )
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=root_dir,
+                **extra_kwargs,
             )
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
             stdout = stdout_b.decode("utf-8", errors="ignore")
@@ -92,13 +112,14 @@ class DependencyScanner:
 
             # pip-audit exits with 1 if vulnerabilities are found, 0 if clean
             if proc.returncode not in (0, 1):
-                logger.warning(f"pip-audit returned exit code {proc.returncode}: {stderr}")
+                clean_err = redact_secrets(stderr.strip() or stdout.strip())
+                logger.warning(f"pip-audit returned exit code {proc.returncode}: {clean_err}")
                 return DependencyScanResult(
                     scanner_name="pip-audit",
                     is_available=True,
                     findings=[],
                     scanned_files=[target_file],
-                    error=f"pip-audit execution failed: {stderr.strip() or stdout.strip()}",
+                    error=f"pip-audit execution failed: {clean_err}",
                 )
 
             findings = self.parse_pip_audit_json(stdout, target_file)
@@ -109,6 +130,11 @@ class DependencyScanner:
                 scanned_files=[target_file],
             )
         except TimeoutError:
+            if proc:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
             return DependencyScanResult(
                 scanner_name="pip-audit",
                 is_available=True,
@@ -123,7 +149,7 @@ class DependencyScanner:
                 is_available=True,
                 findings=[],
                 scanned_files=[target_file],
-                error=str(e),
+                error=redact_secrets(str(e)),
             )
 
     def parse_pip_audit_json(
@@ -201,6 +227,10 @@ class DependencyScanner:
                 error="npm is not installed or available in environment",
             )
 
+        root_dir = os.path.abspath(root_dir)
+        if not os.path.isdir(root_dir):
+            raise FileNotFoundError(f"Root directory does not exist: {root_dir}")
+
         has_pkg = os.path.exists(os.path.join(root_dir, "package.json"))
         has_lock = os.path.exists(os.path.join(root_dir, "package-lock.json"))
         if not has_pkg or not has_lock:
@@ -212,16 +242,27 @@ class DependencyScanner:
                 error=None,
             )
 
-        cmd = [shutil.which("npm") or "npm", "audit", "--json"]
+        npm_bin = shutil.which("npm") or "npm"
+        cmd = [npm_bin, "audit", "--json"]
+        proc = None
         try:
+            extra_kwargs: dict[str, Any] = {}
+            if os.name == "nt":
+                extra_kwargs["creationflags"] = getattr(
+                    subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
+                )
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=root_dir,
+                **extra_kwargs,
             )
-            stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
             stdout = stdout_b.decode("utf-8", errors="ignore")
+            stderr = stderr_b.decode("utf-8", errors="ignore")
+            if stderr.strip():
+                logger.debug(f"npm audit stderr: {stderr.strip()}")
 
             findings = self.parse_npm_audit_json(stdout, "package-lock.json")
             return DependencyScanResult(
@@ -231,6 +272,11 @@ class DependencyScanner:
                 scanned_files=["package.json", "package-lock.json"],
             )
         except TimeoutError:
+            if proc:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
             return DependencyScanResult(
                 scanner_name="npm-audit",
                 is_available=True,
@@ -244,7 +290,7 @@ class DependencyScanner:
                 is_available=True,
                 findings=[],
                 scanned_files=["package.json"],
-                error=str(e),
+                error=redact_secrets(str(e)),
             )
 
     def parse_npm_audit_json(

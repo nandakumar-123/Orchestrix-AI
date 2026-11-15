@@ -68,6 +68,7 @@ class FindingManager:
             clean_evidence = (
                 sanitize_evidence_line(nf.redacted_evidence or "") if nf.redacted_evidence else None
             )
+            clean_title = redact_secrets(nf.title)
             clean_desc = redact_secrets(nf.description)
             clean_rec = (
                 redact_secrets(nf.remediation_recommendation or "")
@@ -103,7 +104,7 @@ class FindingManager:
                     line_start=nf.line_start,
                     line_end=nf.line_end,
                     rule_id=nf.rule_id,
-                    title=nf.title,
+                    title=clean_title,
                     description=clean_desc,
                     redacted_evidence=clean_evidence,
                     remediation_recommendation=clean_rec,
