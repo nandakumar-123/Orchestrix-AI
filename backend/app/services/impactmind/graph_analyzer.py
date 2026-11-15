@@ -10,7 +10,6 @@ from app.services.graph_service import (
     BaseGraphProvider,
     GraphNode,
     GraphRelationship,
-    MockGraphProvider,
     get_graph_provider,
 )
 from app.services.impactmind.ast_classifier import ClassifiedChange
@@ -136,10 +135,8 @@ class GraphImpactAnalyzer:
                 root_ids.add(file_node_id)
 
         # 3. BFS Traversal
-        visited_nodes: dict[str, int] = {rid: 0 for rid in root_ids}
-        queue: collections.deque[tuple[str, int]] = collections.deque(
-            (rid, 0) for rid in root_ids
-        )
+        visited_nodes: dict[str, int] = dict.fromkeys(root_ids, 0)
+        queue: collections.deque[tuple[str, int]] = collections.deque((rid, 0) for rid in root_ids)
 
         direct_deps: list[GraphImpactNode] = []
         indirect_deps: list[GraphImpactNode] = []
@@ -167,7 +164,9 @@ class GraphImpactAnalyzer:
 
                 visited_edges.append(in_rel)
                 rel_conf = float(in_rel.properties.get("confidence", 1.0))
-                is_uncertain = rel_conf < min_confidence or in_rel.properties.get("status") == "unresolved"
+                is_uncertain = (
+                    rel_conf < min_confidence or in_rel.properties.get("status") == "unresolved"
+                )
 
                 if dep_id not in visited_nodes:
                     visited_nodes[dep_id] = depth + 1
@@ -182,7 +181,8 @@ class GraphImpactAnalyzer:
                         depth=depth + 1,
                         relationship_type=in_rel.type,
                         confidence=rel_conf,
-                        evidence=in_rel.properties.get("evidence") or in_rel.properties.get("raw_statement"),
+                        evidence=in_rel.properties.get("evidence")
+                        or in_rel.properties.get("raw_statement"),
                         is_uncertain=is_uncertain,
                     )
 
@@ -246,11 +246,7 @@ class GraphImpactAnalyzer:
                         elif tgt_node.label in ("DatabaseTable", "DatabaseModel"):
                             database_models.append(out_obj)
 
-        impacted_nodes = [
-            nodes_dict[nid].to_dict()
-            for nid in visited_nodes
-            if nid in nodes_dict
-        ]
+        impacted_nodes = [nodes_dict[nid].to_dict() for nid in visited_nodes if nid in nodes_dict]
         impacted_subgraph = {
             "nodes": impacted_nodes,
             "edges": [e.to_dict() for e in visited_edges],

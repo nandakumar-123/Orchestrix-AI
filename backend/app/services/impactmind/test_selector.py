@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import posixpath
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from app.services.impactmind.ast_classifier import ClassifiedChange
@@ -117,7 +117,11 @@ class RegressionTestSelector:
         # 3. Direct / Indirect Callers that are Test Cases
         if graph_result:
             for dep in graph_result.direct_dependents + graph_result.indirect_dependents:
-                if dep.label == "TestCase" or "/tests/" in dep.file_path or dep.file_path.startswith("tests/"):
+                if (
+                    dep.label == "TestCase"
+                    or "/tests/" in dep.file_path
+                    or dep.file_path.startswith("tests/")
+                ):
                     key = f"{dep.file_path}:{dep.name}"
                     if key not in candidates:
                         priority = "HIGH" if dep.depth == 1 else "MEDIUM"
@@ -138,7 +142,12 @@ class RegressionTestSelector:
         if all_test_files:
             for c in changes:
                 base_name = posixpath.splitext(posixpath.basename(c.file_path))[0]
-                expected_names = [f"test_{base_name}", f"{base_name}_test", f"{base_name}.test", f"{base_name}.spec"]
+                expected_names = [
+                    f"test_{base_name}",
+                    f"{base_name}_test",
+                    f"{base_name}.test",
+                    f"{base_name}.spec",
+                ]
                 for t_file in all_test_files:
                     t_base = posixpath.splitext(posixpath.basename(t_file))[0]
                     if any(cand in t_base for cand in expected_names):

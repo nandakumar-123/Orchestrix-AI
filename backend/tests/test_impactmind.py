@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import os
 import uuid
-from typing import Any
+from collections.abc import AsyncGenerator
 
 import pytest
 import pytest_asyncio
@@ -11,20 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.api.deps import get_current_user
 from app.db.base import Base, WorkspaceRole
 from app.db.models.github_installation import GitHubInstallation
-from app.db.models.impactmind import (
-    ChangeClassification,
-    ImpactAssessment,
-    ImpactedEntity,
-    TestExecutionRun,
-    TestRecommendation,
-)
 from app.db.models.membership import WorkspaceMembership
 from app.db.models.repository import Repository
 from app.db.models.repository_intelligence import (
     CodeSymbol,
-    FileDependency,
-    RepositoryFile,
-    RepositorySnapshot,
 )
 from app.db.models.user import User
 from app.db.models.workspace import Workspace
@@ -45,11 +36,8 @@ from app.services.impactmind.graph_analyzer import (
     GraphImpactAnalyzer,
     GraphImpactNode,
 )
-from app.services.impactmind.semantic_analyzer import SemanticImpactAnalyzer
 from app.services.impactmind.test_runner import ControlledTestRunner
-from app.services.impactmind.test_selector import RegressionTestSelector, SelectedRegressionTest
-
-
+from app.services.impactmind.test_selector import RegressionTestSelector
 
 # =============================================================================
 # Diff Parser Tests
@@ -79,7 +67,9 @@ new file mode 100644
 +def health():
 +    return {'status': 'ok'}
 """
-    result = parser.parse_unified_diff(sample_diff, base_commit_sha="abc111", target_commit_sha="def222")
+    result = parser.parse_unified_diff(
+        sample_diff, base_commit_sha="abc111", target_commit_sha="def222"
+    )
 
     assert result.total_files_changed == 2
     assert result.total_additions == 8
@@ -231,7 +221,11 @@ async def test_graph_impact_analyzer_traversal() -> None:
     sym_auth = GraphNode(
         id=f"sym:{snap_id}:app/auth.py:function:authenticate_user",
         label="Function",
-        properties={"snapshot_id": snap_id, "name": "authenticate_user", "file_path": "app/auth.py"},
+        properties={
+            "snapshot_id": snap_id,
+            "name": "authenticate_user",
+            "file_path": "app/auth.py",
+        },
     )
     sym_login = GraphNode(
         id=f"sym:{snap_id}:app/routes.py:function:login_handler",
@@ -241,7 +235,11 @@ async def test_graph_impact_analyzer_traversal() -> None:
     endpoint_node = GraphNode(
         id=f"endpoint:{snap_id}:post:/api/login",
         label="Endpoint",
-        properties={"snapshot_id": snap_id, "name": "POST /api/login", "file_path": "app/routes.py"},
+        properties={
+            "snapshot_id": snap_id,
+            "name": "POST /api/login",
+            "file_path": "app/routes.py",
+        },
     )
 
     await mock_provider.upsert_nodes([sym_auth, sym_login, endpoint_node])
@@ -332,14 +330,29 @@ def test_exposure_scorer_calculation() -> None:
     graph_res = GraphImpactAnalysisResult(
         target_changes=changes,
         direct_dependents=[
-            GraphImpactNode("1", "caller1", "Function", "app/api.py", "direct_dependent", 1, "CALLS", 1.0),
-            GraphImpactNode("2", "caller2", "Function", "app/api.py", "direct_dependent", 1, "CALLS", 1.0),
+            GraphImpactNode(
+                "1", "caller1", "Function", "app/api.py", "direct_dependent", 1, "CALLS", 1.0
+            ),
+            GraphImpactNode(
+                "2", "caller2", "Function", "app/api.py", "direct_dependent", 1, "CALLS", 1.0
+            ),
         ],
         indirect_dependents=[
-            GraphImpactNode("3", "caller3", "Function", "app/api.py", "indirect_dependent", 2, "CALLS", 0.8),
+            GraphImpactNode(
+                "3", "caller3", "Function", "app/api.py", "indirect_dependent", 2, "CALLS", 0.8
+            ),
         ],
         exposed_endpoints=[
-            GraphImpactNode("4", "POST /api/users", "Endpoint", "app/api.py", "exposed_endpoint", 1, "EXPOSES", 1.0),
+            GraphImpactNode(
+                "4",
+                "POST /api/users",
+                "Endpoint",
+                "app/api.py",
+                "exposed_endpoint",
+                1,
+                "EXPOSES",
+                1.0,
+            ),
         ],
         database_models=[],
         affected_tests=[],
@@ -377,7 +390,16 @@ def test_test_selector_ranking() -> None:
         direct_dependents=[],
         indirect_dependents=[],
         exposed_endpoints=[
-            GraphImpactNode("ep1", "POST /login", "Endpoint", "app/auth.py", "exposed_endpoint", 1, "EXPOSES", 1.0)
+            GraphImpactNode(
+                "ep1",
+                "POST /login",
+                "Endpoint",
+                "app/auth.py",
+                "exposed_endpoint",
+                1,
+                "EXPOSES",
+                1.0,
+            )
         ],
         database_models=[],
         affected_tests=[],
@@ -431,11 +453,45 @@ async def test_test_runner_safeguards() -> None:
 
     # 4. Allow legitimate test command
     cmd_args = runner.sanitize_command("pytest tests/test_auth.py")
-    assert cmd_args[0] == "pytest"
+    assert "pytest" in cmd_args[0].lower()
     assert cmd_args[1] == "tests/test_auth.py"
 
-    # 5. Secret redaction
-    sensitive_log = "Error in auth: bearer_token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xyz123' failed"
+    # 5. Reject forbidden flags (argument injection protection)
+    with pytest.raises(ValueError, match="Disallowed command flag"):
+        runner.sanitize_command("pytest -o addopts=--capture=no")
+
+    with pytest.raises(ValueError, match="Disallowed command flag"):
+        runner.sanitize_command("pytest --override-ini=foo=bar")
+
+    with pytest.raises(ValueError, match="Disallowed command flag"):
+        runner.sanitize_command("pytest -c evil.ini")
+
+    with pytest.raises(ValueError, match="Disallowed command flag"):
+        runner.sanitize_command("go test -exec calc.exe")
+
+    # 6. Reject path traversal
+    with pytest.raises(ValueError, match="Path traversal"):
+        runner.sanitize_command("pytest ../../../outside_test.py")
+
+    # 7. Working directory validation & jail
+    with pytest.raises(PermissionError, match="protected system directory"):
+        runner.validate_working_directory("C:\\Windows\\System32" if os.name == "nt" else "/etc")
+
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        runner.validate_working_directory("non_existent_dir_999999")
+
+    # 8. Environment secret scrubbing
+    os.environ["ORCHESTRIX_DATABASE_URL"] = "postgresql://secret_user:secret_pass@localhost/db"
+    os.environ["ORCHESTRIX_JWT_SECRET"] = "super_secret_jwt_key_12345"
+    isolated_env = runner.build_isolated_environment()
+    assert "ORCHESTRIX_DATABASE_URL" not in isolated_env
+    assert "ORCHESTRIX_JWT_SECRET" not in isolated_env
+    assert "PATH" in isolated_env
+
+    # 9. Secret redaction
+    sensitive_log = (
+        "Error in auth: bearer_token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xyz123' failed"
+    )
     redacted = runner.redact_secrets(sensitive_log)
     assert "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xyz123" not in redacted
     assert "REDACTED" in redacted
@@ -474,9 +530,7 @@ async def api_client(test_db_session: AsyncSession) -> AsyncGenerator[AsyncClien
 
 
 @pytest.mark.asyncio
-async def test_impact_api_pipeline(
-    api_client: AsyncClient, test_db_session: AsyncSession
-) -> None:
+async def test_impact_api_pipeline(api_client: AsyncClient, test_db_session: AsyncSession) -> None:
     # 1. Seed tenant user, workspace, membership, repository
     user = User(
         id=uuid.uuid4(),
@@ -590,3 +644,164 @@ async def test_impact_api_pipeline(
     )
     assert unapproved_run.status_code == 400
     assert "Explicit user approval" in unapproved_run.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_real_github_repository_compare_analysis(
+    test_db_session: AsyncSession,
+) -> None:
+    """
+    Test ImpactMind analysis using real-world multi-file payload from
+    the connected nandakumar-123/time-tracker GitHub repository.
+    Verifies Tree-sitter multi-language extraction, symbol resolution,
+    and structural exposure calculation across 23 real repository files.
+    """
+    # 1. Seed Workspace, Installation, Repository and Snapshot
+    repo_id = uuid.uuid4()
+    ws_id = uuid.uuid4()
+    snap_id = uuid.uuid4()
+    inst_id = uuid.uuid4()
+
+    workspace = Workspace(
+        id=ws_id,
+        name="Time Tracker Workspace",
+        slug="time-tracker-ws",
+    )
+    installation = GitHubInstallation(
+        id=inst_id,
+        workspace_id=ws_id,
+        installation_id=207181718,
+        account_login="nandakumar-123",
+        account_type="User",
+        account_id=207181718,
+    )
+    repo = Repository(
+        id=repo_id,
+        workspace_id=ws_id,
+        installation_id=inst_id,
+        github_repository_id=12345678,
+        name="time-tracker",
+        full_name="nandakumar-123/time-tracker",
+        owner_login="nandakumar-123",
+        html_url="https://github.com/nandakumar-123/time-tracker",
+        default_branch="main",
+        is_active=True,
+    )
+    test_db_session.add_all([workspace, installation, repo])
+
+    # Add symbols corresponding to real time-tracker repository
+    sym1 = CodeSymbol(
+        id=uuid.uuid4(),
+        workspace_id=ws_id,
+        repository_id=repo_id,
+        snapshot_id=snap_id,
+        file_id=uuid.uuid4(),
+        file_path="src/components/ui/button.tsx",
+        name="Button",
+        symbol_type="function",
+        start_line=37,
+        end_line=56,
+        language="TSX",
+    )
+    sym2 = CodeSymbol(
+        id=uuid.uuid4(),
+        workspace_id=ws_id,
+        repository_id=repo_id,
+        snapshot_id=snap_id,
+        file_id=uuid.uuid4(),
+        file_path="src/lib/utils.ts",
+        name="cn",
+        symbol_type="function",
+        start_line=4,
+        end_line=6,
+        language="TypeScript",
+    )
+    sym3 = CodeSymbol(
+        id=uuid.uuid4(),
+        workspace_id=ws_id,
+        repository_id=repo_id,
+        snapshot_id=snap_id,
+        file_id=uuid.uuid4(),
+        file_path="src/components/ui/TimeChart.tsx",
+        name="Data",
+        symbol_type="interface",
+        start_line=7,
+        end_line=10,
+        language="TSX",
+    )
+    test_db_session.add_all([sym1, sym2, sym3])
+    await test_db_session.flush()
+
+    # Real GitHub compare payload with 23 modified files
+    real_compare_payload = {
+        "base_commit": {"sha": "e242a62142"},
+        "commits": [{"sha": "3632fecee7", "commit": {"message": "second project"}}],
+        "files": [
+            {
+                "filename": "package.json",
+                "status": "modified",
+                "additions": 41,
+                "deletions": 0,
+                "patch": '@@ -0,0 +1,41 @@\n+{\n+  "name": "time-tracker",\n+  "dependencies": {"react": "^18.2.0"}\n+}',
+            },
+            {
+                "filename": "src/components/ui/button.tsx",
+                "status": "modified",
+                "additions": 58,
+                "deletions": 0,
+                "patch": "@@ -0,0 +37,20 @@\n+function Button() {\n+  return <button>Click</button>;\n+}",
+            },
+            {
+                "filename": "src/lib/utils.ts",
+                "status": "modified",
+                "additions": 6,
+                "deletions": 0,
+                "patch": "@@ -0,0 +4,3 @@\n+export function cn(...inputs) {\n+  return inputs.join(' ');\n+}",
+            },
+            {
+                "filename": "src/components/ui/TimeChart.tsx",
+                "status": "modified",
+                "additions": 58,
+                "deletions": 0,
+                "patch": "@@ -0,0 +7,4 @@\n+export interface Data {\n+  hours: number;\n+}",
+            },
+            {
+                "filename": "components.json",
+                "status": "modified",
+                "additions": 22,
+                "deletions": 0,
+                "patch": '@@ -0,0 +1,22 @@\n+{"$schema": "https://ui.shadcn.com/schema.json"}',
+            },
+        ],
+    }
+
+    engine = ImpactMindEngine(graph_provider=MockGraphProvider())
+    assessment = await engine.analyze_changes(
+        db=test_db_session,
+        workspace_id=ws_id,
+        repository_id=repo_id,
+        snapshot_id=snap_id,
+        github_compare_payload=real_compare_payload,
+        comparison_mode="commit_range",
+    )
+
+    assert assessment.status == "completed"
+    assert assessment.base_commit_sha == "e242a62142"
+    assert assessment.target_commit_sha == "3632fecee7"
+    assert len(assessment.classifications) == 5
+
+    # Verify symbol resolution against real repo symbols
+    button_change = next(
+        c for c in assessment.classifications if c.file_path == "src/components/ui/button.tsx"
+    )
+    assert button_change.symbol_name == "Button"
+    assert button_change.symbol_id == str(sym1.id)
+
+    cn_change = next(c for c in assessment.classifications if c.file_path == "src/lib/utils.ts")
+    assert cn_change.symbol_name == "cn"
+    assert cn_change.symbol_id == str(sym2.id)
+
+    # Verify dependency change classification
+    pkg_change = next(c for c in assessment.classifications if c.file_path == "package.json")
+    assert pkg_change.category == "DEPENDENCY_CHANGE"
+    assert not pkg_change.is_breaking

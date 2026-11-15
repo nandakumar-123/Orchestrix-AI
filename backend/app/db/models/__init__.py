@@ -14,6 +14,13 @@ from app.db.models.engineering_task import EngineeringTask
 from app.db.models.github_account import GitHubAccount
 from app.db.models.github_installation import GitHubInstallation
 from app.db.models.github_oauth_transaction import GitHubOAuthTransaction
+from app.db.models.impactmind import (
+    ChangeClassification,
+    ImpactAssessment,
+    ImpactedEntity,
+    TestExecutionRun,
+    TestRecommendation,
+)
 from app.db.models.membership import WorkspaceMembership
 from app.db.models.oauth_transaction import OAuthTransaction
 from app.db.models.pull_request import PullRequestRecord
@@ -27,13 +34,6 @@ from app.db.models.repository_intelligence import (
     RepositorySnapshot,
 )
 from app.db.models.repository_member import RepositoryMember
-from app.db.models.impactmind import (
-    ChangeClassification,
-    ImpactAssessment,
-    ImpactedEntity,
-    TestExecutionRun,
-    TestRecommendation,
-)
 from app.db.models.semantic_intelligence import (
     EmbeddingModelMetadata,
     SemanticCodeChunk,

@@ -85,28 +85,22 @@ class ImpactAssessment(Base):
         String(16), default="LOW", nullable=False
     )  # LOW, MEDIUM, HIGH, CRITICAL
 
-    change_summary: Mapped[dict[str, Any]] = mapped_column(
-        JSON_TYPE, default=dict, nullable=False
-    )
-    reasons: Mapped[list[Any]] = mapped_column(
-        JSON_TYPE, default=list, nullable=False
-    )
-    recommended_actions: Mapped[list[Any]] = mapped_column(
-        JSON_TYPE, default=list, nullable=False
-    )
+    change_summary: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict, nullable=False)
+    reasons: Mapped[list[Any]] = mapped_column(JSON_TYPE, default=list, nullable=False)
+    recommended_actions: Mapped[list[Any]] = mapped_column(JSON_TYPE, default=list, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     workspace: Mapped["Workspace"] = relationship("Workspace", lazy="selectin")
     repository: Mapped["Repository"] = relationship("Repository", lazy="selectin")
-    snapshot: Mapped["RepositorySnapshot | None"] = relationship("RepositorySnapshot", lazy="selectin")
+    snapshot: Mapped["RepositorySnapshot | None"] = relationship(
+        "RepositorySnapshot", lazy="selectin"
+    )
     user: Mapped["User | None"] = relationship("User", lazy="selectin")
 
     classifications: Mapped[list["ChangeClassification"]] = relationship(
@@ -221,7 +215,6 @@ class TestRecommendation(Base):
     __tablename__ = "impact_test_recommendations"
     __test__ = False
 
-
     __table_args__ = (
         Index("ix_test_recommendations_assessment_id", "assessment_id"),
         Index("ix_test_recommendations_priority", "priority"),
@@ -262,7 +255,6 @@ class TestExecutionRun(Base):
     __tablename__ = "impact_test_executions"
     __test__ = False
 
-
     __table_args__ = (
         Index("ix_test_executions_assessment_id", "assessment_id"),
         Index("ix_test_executions_status", "status"),
@@ -292,12 +284,8 @@ class TestExecutionRun(Base):
     skipped_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     assessment: Mapped["ImpactAssessment"] = relationship(
         "ImpactAssessment", back_populates="test_executions"

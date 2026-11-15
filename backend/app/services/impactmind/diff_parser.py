@@ -57,7 +57,6 @@ class FileDiff:
         """Alias for path for consistent API access."""
         return self.path
 
-
     @property
     def changed_new_line_ranges(self) -> list[tuple[int, int]]:
         """Return list of (start_line, end_line) ranges in the new file."""

@@ -35,7 +35,9 @@ def upgrade() -> None:
         sa.Column("initiated_by_user_id", sa.Uuid(), nullable=True),
         sa.Column("base_commit_sha", sa.String(length=64), nullable=True),
         sa.Column("target_commit_sha", sa.String(length=64), nullable=True),
-        sa.Column("comparison_mode", sa.String(length=32), nullable=False, server_default="diff_input"),
+        sa.Column(
+            "comparison_mode", sa.String(length=32), nullable=False, server_default="diff_input"
+        ),
         sa.Column("status", sa.String(length=32), nullable=False, server_default="pending"),
         sa.Column("structural_exposure_score", sa.Float(), nullable=False, server_default="0.0"),
         sa.Column("exposure_tier", sa.String(length=16), nullable=False, server_default="LOW"),
@@ -71,11 +73,27 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_impact_assessments")),
     )
-    op.create_index(op.f("ix_impact_assessments_workspace_id"), "impact_assessments", ["workspace_id"], unique=False)
-    op.create_index(op.f("ix_impact_assessments_repo_id"), "impact_assessments", ["repository_id"], unique=False)
-    op.create_index(op.f("ix_impact_assessments_snapshot_id"), "impact_assessments", ["snapshot_id"], unique=False)
-    op.create_index(op.f("ix_impact_assessments_status"), "impact_assessments", ["status"], unique=False)
-    op.create_index(op.f("ix_impact_assessments_created_at"), "impact_assessments", ["created_at"], unique=False)
+    op.create_index(
+        op.f("ix_impact_assessments_workspace_id"),
+        "impact_assessments",
+        ["workspace_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_impact_assessments_repo_id"), "impact_assessments", ["repository_id"], unique=False
+    )
+    op.create_index(
+        op.f("ix_impact_assessments_snapshot_id"),
+        "impact_assessments",
+        ["snapshot_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_impact_assessments_status"), "impact_assessments", ["status"], unique=False
+    )
+    op.create_index(
+        op.f("ix_impact_assessments_created_at"), "impact_assessments", ["created_at"], unique=False
+    )
 
     # 2. impact_change_classifications table
     op.create_table(
@@ -99,8 +117,18 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_impact_change_classifications")),
     )
-    op.create_index(op.f("ix_impact_changes_assessment_id"), "impact_change_classifications", ["assessment_id"], unique=False)
-    op.create_index(op.f("ix_impact_changes_category"), "impact_change_classifications", ["category"], unique=False)
+    op.create_index(
+        op.f("ix_impact_changes_assessment_id"),
+        "impact_change_classifications",
+        ["assessment_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_impact_changes_category"),
+        "impact_change_classifications",
+        ["category"],
+        unique=False,
+    )
 
     # 3. impact_impacted_entities table
     op.create_table(
@@ -124,8 +152,15 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_impact_impacted_entities")),
     )
-    op.create_index(op.f("ix_impacted_entities_assessment_id"), "impact_impacted_entities", ["assessment_id"], unique=False)
-    op.create_index(op.f("ix_impacted_entities_type"), "impact_impacted_entities", ["impact_type"], unique=False)
+    op.create_index(
+        op.f("ix_impacted_entities_assessment_id"),
+        "impact_impacted_entities",
+        ["assessment_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_impacted_entities_type"), "impact_impacted_entities", ["impact_type"], unique=False
+    )
 
     # 4. impact_test_recommendations table
     op.create_table(
@@ -148,8 +183,18 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_impact_test_recommendations")),
     )
-    op.create_index(op.f("ix_test_recommendations_assessment_id"), "impact_test_recommendations", ["assessment_id"], unique=False)
-    op.create_index(op.f("ix_test_recommendations_priority"), "impact_test_recommendations", ["priority"], unique=False)
+    op.create_index(
+        op.f("ix_test_recommendations_assessment_id"),
+        "impact_test_recommendations",
+        ["assessment_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_test_recommendations_priority"),
+        "impact_test_recommendations",
+        ["priority"],
+        unique=False,
+    )
 
     # 5. impact_test_executions table
     op.create_table(
@@ -175,8 +220,15 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_impact_test_executions")),
     )
-    op.create_index(op.f("ix_test_executions_assessment_id"), "impact_test_executions", ["assessment_id"], unique=False)
-    op.create_index(op.f("ix_test_executions_status"), "impact_test_executions", ["status"], unique=False)
+    op.create_index(
+        op.f("ix_test_executions_assessment_id"),
+        "impact_test_executions",
+        ["assessment_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_test_executions_status"), "impact_test_executions", ["status"], unique=False
+    )
 
 
 def downgrade() -> None:

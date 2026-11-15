@@ -140,7 +140,10 @@ class ImpactMindEngine:
         semantic_result = None
         graph_files = set()
         if graph_result:
-            graph_files = {d.file_path for d in graph_result.direct_dependents + graph_result.indirect_dependents}
+            graph_files = {
+                d.file_path
+                for d in graph_result.direct_dependents + graph_result.indirect_dependents
+            }
         try:
             semantic_result = await self.semantic_analyzer.analyze_semantic_impact(
                 db=db,
@@ -177,7 +180,9 @@ class ImpactMindEngine:
             "breaking_changes_count": breaking_count,
             "total_classifications": len(classifications),
             "direct_dependents_count": len(graph_result.direct_dependents) if graph_result else 0,
-            "indirect_dependents_count": len(graph_result.indirect_dependents) if graph_result else 0,
+            "indirect_dependents_count": len(graph_result.indirect_dependents)
+            if graph_result
+            else 0,
             "exposed_endpoints_count": len(graph_result.exposed_endpoints) if graph_result else 0,
             "database_models_count": len(graph_result.database_models) if graph_result else 0,
             "recommended_tests_count": len(recommended_tests),
@@ -289,12 +294,9 @@ class ImpactMindEngine:
         assessment_id: uuid.UUID,
     ) -> ImpactAssessment | None:
         """Fetch assessment ensuring tenant workspace isolation."""
-        stmt = (
-            select(ImpactAssessment)
-            .where(
-                ImpactAssessment.id == assessment_id,
-                ImpactAssessment.workspace_id == workspace_id,
-            )
+        stmt = select(ImpactAssessment).where(
+            ImpactAssessment.id == assessment_id,
+            ImpactAssessment.workspace_id == workspace_id,
         )
         res = await db.execute(stmt)
         return res.scalar_one_or_none()
@@ -321,12 +323,9 @@ class ImpactMindEngine:
         res = await db.execute(stmt)
         assessments = list(res.scalars().all())
 
-        count_stmt = (
-            select(ImpactAssessment)
-            .where(
-                ImpactAssessment.workspace_id == workspace_id,
-                ImpactAssessment.repository_id == repository_id,
-            )
+        count_stmt = select(ImpactAssessment).where(
+            ImpactAssessment.workspace_id == workspace_id,
+            ImpactAssessment.repository_id == repository_id,
         )
         c_res = await db.execute(count_stmt)
         total = len(list(c_res.scalars().all()))
@@ -398,19 +397,23 @@ class ImpactMindEngine:
         test_run.completed_at = utc_now()
 
         # Recompute score with test execution feedback
-        recomputed_score = self.scorer.compute_score(
+        self.scorer.compute_score(
             changes=[],  # preserve existing reasons
             graph_result=None,
             recommended_tests=[],
             test_execution=result,
         )
         if result.status == "PASSED":
-            assessment.structural_exposure_score = max(0.0, assessment.structural_exposure_score - 10.0)
+            assessment.structural_exposure_score = max(
+                0.0, assessment.structural_exposure_score - 10.0
+            )
             assessment.reasons = list(assessment.reasons) + [
                 f"Approved regression test suite passed ({result.passed_count} tests) (-10.0 credit)"
             ]
         elif result.status == "FAILED":
-            assessment.structural_exposure_score = min(100.0, assessment.structural_exposure_score + 15.0)
+            assessment.structural_exposure_score = min(
+                100.0, assessment.structural_exposure_score + 15.0
+            )
             assessment.reasons = list(assessment.reasons) + [
                 f"Approved regression test suite failed ({result.failed_count} failures) (+15.0 penalty)"
             ]
@@ -444,7 +447,8 @@ class ImpactMindEngine:
             return True
         return cancelled
 
-    async def get_execution(self, db: AsyncSession, execution_id: uuid.UUID) -> TestExecutionRun | None:
+    async def get_execution(
+        self, db: AsyncSession, execution_id: uuid.UUID
+    ) -> TestExecutionRun | None:
         """Fetch test execution run by ID."""
         return await db.get(TestExecutionRun, execution_id)
-

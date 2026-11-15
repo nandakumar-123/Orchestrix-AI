@@ -8,10 +8,9 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.impactmind.ast_classifier import ClassifiedChange
-from app.services.semantic_retrieval import RetrievedChunkResult, SemanticRetrievalEngine
+from app.services.semantic_retrieval import SemanticRetrievalEngine
 
 logger = logging.getLogger("orchestrix.impactmind.semantic_analyzer")
-
 
 
 @dataclass
@@ -132,7 +131,8 @@ class SemanticImpactAnalyzer:
                             symbol_type=chunk.symbol_type,
                             start_line=chunk.start_line,
                             end_line=chunk.end_line,
-                            content=chunk.content[:200] + ("..." if len(chunk.content) > 200 else ""),
+                            content=chunk.content[:200]
+                            + ("..." if len(chunk.content) > 200 else ""),
                             similarity_score=chunk.similarity_score,
                             matched_query=query_text,
                             relation_reason=reason,
@@ -141,7 +141,9 @@ class SemanticImpactAnalyzer:
                     )
             except Exception as e:
                 logger.warning(f"Semantic search query '{query_text}' failed: {e}")
-                return SemanticImpactResult(matches=matches, total_searches=len(queries_to_run), is_degraded=True)
+                return SemanticImpactResult(
+                    matches=matches, total_searches=len(queries_to_run), is_degraded=True
+                )
 
         return SemanticImpactResult(
             matches=sorted(matches, key=lambda m: m.similarity_score, reverse=True),

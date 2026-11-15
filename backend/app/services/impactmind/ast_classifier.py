@@ -82,7 +82,6 @@ class ASTChangeClassifier:
             self.file_contents_after = file_contents_after
         return self.classify_diff(diff_result)
 
-
     def classify_file_diff(self, file_diff: FileDiff) -> list[ClassifiedChange]:
         """Classify changes in a single file diff."""
         path = file_diff.path
@@ -112,12 +111,7 @@ class ASTChangeClassifier:
             )
         ):
             # Inspect diff lines to see if dependencies were modified
-            added_text = " ".join(
-                line for h in file_diff.hunks for line in h.added_lines
-            )
-            deleted_text = " ".join(
-                line for h in file_diff.hunks for line in h.deleted_lines
-            )
+            deleted_text = " ".join(line for h in file_diff.hunks for line in h.deleted_lines)
             is_breaking = bool(deleted_text.strip())
             return [
                 ClassifiedChange(
@@ -206,14 +200,10 @@ class ASTChangeClassifier:
         # Parse ASTs using Tree-sitter
         lang_name = PARSER_REGISTRY._ext_map.get(ext) or "Python"
         new_analysis = (
-            analyze_code_content(new_content.encode("utf-8"), lang_name)
-            if new_content
-            else None
+            analyze_code_content(new_content.encode("utf-8"), lang_name) if new_content else None
         )
         old_analysis = (
-            analyze_code_content(old_content.encode("utf-8"), lang_name)
-            if old_content
-            else None
+            analyze_code_content(old_content.encode("utf-8"), lang_name) if old_content else None
         )
 
         new_syms = new_analysis.symbols if new_analysis else []
@@ -415,7 +405,9 @@ class ASTChangeClassifier:
 
         if is_test_file:
             default_cat = "TEST_CHANGE"
-        elif any(k in path.lower() for k in ("alembic", "migration", "schema")) or path.endswith((".sql",)):
+        elif any(k in path.lower() for k in ("alembic", "migration", "schema")) or path.endswith(
+            (".sql",)
+        ):
             default_cat = "DATABASE_SCHEMA_CHANGE"
         elif any(k in path.lower() for k in ("routes", "api", "controllers", "endpoints")):
             default_cat = "API_ROUTE_CHANGE"
@@ -457,9 +449,7 @@ class ASTChangeClassifier:
 
         return results
 
-    def _is_breaking_signature_change(
-        self, old_s: ExtractedSymbol, new_s: ExtractedSymbol
-    ) -> bool:
+    def _is_breaking_signature_change(self, old_s: ExtractedSymbol, new_s: ExtractedSymbol) -> bool:
         """
         Heuristic to determine if a signature change breaks callers.
         - Additional required parameters without defaults -> Breaking.

@@ -699,7 +699,6 @@ class IntelligenceSearchRequest(BaseModel):
     include_graph_enrichment: bool = True
 
 
-
 # =============================================================================
 # ImpactMind Schemas (Phase 11)
 # =============================================================================
@@ -838,4 +837,3 @@ class CancelTestsRequest(BaseModel):
     """Request to cancel ongoing test execution."""
 
     execution_id: uuid.UUID
-
