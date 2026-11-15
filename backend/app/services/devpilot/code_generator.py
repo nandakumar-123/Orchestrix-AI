@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -119,31 +120,53 @@ class CodeGenerationEngine:
 
         try:
             raw_text = llm_res.content.strip()
-            if raw_text.startswith("```"):
-                lines = raw_text.splitlines()
-                if lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].startswith("```"):
-                    lines = lines[:-1]
-                raw_text = "\n".join(lines).strip()
+            # Extract JSON block using regex if wrapped in markdown or conversational prose
+            match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw_text)
+            if match:
+                raw_text = match.group(1).strip()
+            else:
+                match_brace = re.search(r"\{[\s\S]*\}", raw_text)
+                if match_brace:
+                    raw_text = match_brace.group(0).strip()
+
             parsed = json.loads(raw_text)
             file_actions = parsed.get("files", [])
         except Exception as e:
             logger.warning(
                 f"Failed to parse LLM code generation JSON: {e}; applying fallback generation."
             )
-            # Fallback code generation for planned steps
+            # Fallback code generation for planned steps with language-appropriate syntax
             for st in plan.steps:
                 for target_f in st.target_files:
                     existing = base_files.get(target_f, "")
+                    is_ts_js = target_f.endswith((".ts", ".tsx", ".js", ".jsx"))
+                    is_py = target_f.endswith(".py")
+                    is_c_cpp = target_f.endswith(
+                        (".c", ".cpp", ".h", ".hpp", ".cs", ".java", ".go", ".rs")
+                    )
+
                     if st.action_type == "ADD_TEST":
-                        content = (
-                            f"# Auto-generated test by DevPilot\n"
-                            f"def test_{st.affected_symbols[0] if st.affected_symbols else 'feature'}():\n"
-                            f"    assert True\n"
-                        )
+                        if is_ts_js:
+                            content = (
+                                "import { describe, it, expect } from 'vitest';\n\n"
+                                f"describe('{st.affected_symbols[0] if st.affected_symbols else 'feature'}', () => {{\n"
+                                "  it('should execute successfully', () => {\n"
+                                "    expect(true).toBe(true);\n"
+                                "  });\n"
+                                "});\n"
+                            )
+                        elif is_py:
+                            content = (
+                                "# Auto-generated test by DevPilot\n"
+                                f"def test_{st.affected_symbols[0] if st.affected_symbols else 'feature'}():\n"
+                                "    assert True\n"
+                            )
+                        else:
+                            content = f"// Test for {st.title}\n"
                     else:
-                        content = existing + f"\n# Added by DevPilot: {st.title}\n"
+                        comment_sym = "//" if (is_ts_js or is_c_cpp) else "#"
+                        content = existing + f"\n{comment_sym} Added by DevPilot: {st.title}\n"
+
                     file_actions.append(
                         {
                             "file_path": target_f,

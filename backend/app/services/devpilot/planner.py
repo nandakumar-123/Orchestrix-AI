@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -110,15 +111,16 @@ class EngineeringPlanningEngine:
         # Parse LLM JSON output with fallback handling
         plan_data: dict[str, Any] = {}
         try:
-            # Strip markdown code fences if LLM wrapped JSON in ```json ... ```
             raw_text = llm_response.content.strip()
-            if raw_text.startswith("```"):
-                lines = raw_text.splitlines()
-                if lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].startswith("```"):
-                    lines = lines[:-1]
-                raw_text = "\n".join(lines).strip()
+            # Extract JSON block using regex if wrapped in markdown or conversational prose
+            match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw_text)
+            if match:
+                raw_text = match.group(1).strip()
+            else:
+                match_brace = re.search(r"\{[\s\S]*\}", raw_text)
+                if match_brace:
+                    raw_text = match_brace.group(0).strip()
+
             plan_data = json.loads(raw_text)
         except Exception as e:
             logger.warning(

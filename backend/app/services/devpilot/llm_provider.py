@@ -76,7 +76,7 @@ class BaseLLMProvider(ABC):
 class GeminiProvider(BaseLLMProvider):
     """Google Gemini AI provider using REST API with httpx."""
 
-    def __init__(self, api_key: str | None = None, model: str = "gemini-1.5-flash") -> None:
+    def __init__(self, api_key: str | None = None, model: str = "gemini-3.5-flash") -> None:
         self.api_key = (api_key or settings.GEMINI_API_KEY or "").strip()
         self._model = model
 
@@ -168,7 +168,11 @@ class MistralProvider(BaseLLMProvider):
         self.base_url = (
             base_url or settings.MISTRAL_API_BASE_URL or "https://api.mistral.ai/v1"
         ).rstrip("/")
-        self._model = model or settings.MISTRAL_MODEL or "mistral-large-latest"
+        # Prefer codestral-latest which is enabled and optimized for code generation
+        configured_model = settings.MISTRAL_MODEL
+        if not configured_model or configured_model == "mistral-large-latest":
+            configured_model = "codestral-latest"
+        self._model = model or configured_model
 
     @property
     def provider_name(self) -> str:
