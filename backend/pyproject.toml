@@ -60,6 +60,8 @@ dependencies = [
     "pgvector>=0.5.1",
     "fastembed>=0.9.1",
     "neo4j>=6.4.1",
+    "coverage>=7.17.3",
+    "pip-audit>=2.10.1",
 ]
 
 [project.optional-dependencies]

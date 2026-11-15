@@ -58,7 +58,12 @@ class TestType(enum.StrEnum):
     INTEGRATION = "integration"
     REGRESSION = "regression"
     EDGE_CASE = "edge_case"
+    BOUNDARY = "boundary"
     NEGATIVE = "negative"
+    EXCEPTION = "exception"
+
+
+TestPilotTestType = TestType
 
 
 class TestSuiteStatus(enum.StrEnum):

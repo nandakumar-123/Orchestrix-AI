@@ -61,6 +61,7 @@ _ACTIVE_TEST_TASKS: dict[str, asyncio.Task[Any]] = {}
 
 @dataclass
 class TestExecutionResult:
+    __test__ = False
     execution_id: str
     command: str
     status: str  # "PASSED" | "FAILED" | "TIMED_OUT" | "CANCELLED" | "SKIPPED" | "NOT_EXECUTED"
