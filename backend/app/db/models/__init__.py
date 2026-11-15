@@ -45,9 +45,32 @@ from app.db.models.repository_intelligence import (
     RepositorySnapshot,
 )
 from app.db.models.repository_member import RepositoryMember
+from app.db.models.secureflow import (
+    FindingSeverity,
+    FindingStatus,
+    ScanEventType,
+    SecureFlowFinding,
+    SecureFlowScan,
+    SecureFlowScanEvent,
+    SecureFlowScanStatus,
+)
 from app.db.models.semantic_intelligence import (
     EmbeddingModelMetadata,
     SemanticCodeChunk,
+)
+from app.db.models.testpilot import (
+    TestExecutionStatus,
+    TestFramework,
+    TestPilotCase,
+    TestPilotCoverageReport,
+    TestPilotExecution,
+    TestPilotResult,
+    TestPilotSuite,
+    TestResultOutcome,
+    TestSuiteStatus,
+)
+from app.db.models.testpilot import (
+    TestType as TestPilotTestType,
 )
 from app.db.models.user import User
 from app.db.models.workspace import Workspace
@@ -96,4 +119,21 @@ __all__ = [
     "DevPilotValidationRun",
     "DevPilotApproval",
     "DevPilotEvent",
+    "TestPilotSuite",
+    "TestPilotCase",
+    "TestPilotExecution",
+    "TestPilotResult",
+    "TestPilotCoverageReport",
+    "TestFramework",
+    "TestPilotTestType",
+    "TestSuiteStatus",
+    "TestExecutionStatus",
+    "TestResultOutcome",
+    "SecureFlowScan",
+    "SecureFlowFinding",
+    "SecureFlowScanEvent",
+    "SecureFlowScanStatus",
+    "FindingSeverity",
+    "FindingStatus",
+    "ScanEventType",
 ]
