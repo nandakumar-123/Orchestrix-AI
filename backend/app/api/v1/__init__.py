@@ -7,7 +7,9 @@ from app.api.v1.github import github_router
 from app.api.v1.graph import graph_router
 from app.api.v1.impact import impact_router
 from app.api.v1.indexing import indexing_router
+from app.api.v1.secureflow import secureflow_router
 from app.api.v1.semantic import semantic_router
+from app.api.v1.testpilot import testpilot_router
 
 api_router = APIRouter()
 api_router.include_router(health_router)
@@ -18,3 +20,5 @@ api_router.include_router(semantic_router)
 api_router.include_router(graph_router)
 api_router.include_router(impact_router)
 api_router.include_router(devpilot_router)
+api_router.include_router(testpilot_router)
+api_router.include_router(secureflow_router)
