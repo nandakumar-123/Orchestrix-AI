@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -10,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import (
     enforce_csrf_protection,
     get_current_user,
-    require_workspace_membership,
 )
 from app.api.v1.schemas import (
     DevPilotApproveChangesRequest,
@@ -32,6 +32,7 @@ from app.db.models.membership import WorkspaceMembership
 from app.db.models.repository import Repository
 from app.db.models.user import User
 from app.db.session import get_db_session
+from app.services.auth import verify_workspace_membership
 from app.services.devpilot.orchestrator import DevPilotOrchestrator
 
 devpilot_router = APIRouter(prefix="/repositories", tags=["devpilot"])
@@ -45,6 +46,55 @@ def get_devpilot_orchestrator() -> DevPilotOrchestrator:
     if _devpilot_orchestrator is None:
         _devpilot_orchestrator = DevPilotOrchestrator()
     return _devpilot_orchestrator
+
+
+async def resolve_repository_workspace(
+    repository_id: uuid.UUID,
+    workspace_id: uuid.UUID | None = Query(default=None, description="Workspace tenant identifier"),
+    db: AsyncSession = Depends(get_db_session),
+) -> tuple[Repository, uuid.UUID]:
+    """
+    Resolve the repository and its workspace ID.
+    Supports explicit workspace_id query param as well as fallback resolution directly from Repository.
+    """
+    repo = await db.get(Repository, repository_id)
+    if not repo:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Repository {repository_id} not found",
+        )
+    if workspace_id is not None and repo.workspace_id != workspace_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Repository {repository_id} not found in workspace",
+        )
+    return repo, repo.workspace_id
+
+
+def require_devpilot_workspace_role(
+    min_role: WorkspaceRole = WorkspaceRole.VIEWER,
+) -> Callable[..., Any]:
+    """
+    Dependency factory to enforce repository workspace membership and role hierarchy.
+    Resolves the workspace either from query parameter or repository entity,
+    and enforces workspace membership with the required minimum role.
+    """
+
+    async def _workspace_auth_dependency(
+        repo_and_ws: tuple[Repository, uuid.UUID] = Depends(resolve_repository_workspace),
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db_session),
+    ) -> tuple[Repository, uuid.UUID, WorkspaceMembership]:
+        repo, workspace_id = repo_and_ws
+        membership = await verify_workspace_membership(
+            db=db,
+            user_id=current_user.id,
+            workspace_id=workspace_id,
+            min_role=min_role,
+        )
+        return repo, workspace_id, membership
+
+    return _workspace_auth_dependency
 
 
 def _format_task_response(task: Any) -> DevPilotTaskResponse:
@@ -122,19 +172,15 @@ def _format_task_response(task: Any) -> DevPilotTaskResponse:
 async def create_engineering_task(
     repository_id: uuid.UUID,
     payload: DevPilotTaskCreateRequest,
-    workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
     current_user: User = Depends(get_current_user),
-    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.MEMBER)),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
+        require_devpilot_workspace_role(WorkspaceRole.MEMBER)
+    ),
     _csrf: None = Depends(enforce_csrf_protection),
     db: AsyncSession = Depends(get_db_session),
     orchestrator: DevPilotOrchestrator = Depends(get_devpilot_orchestrator),
 ) -> DevPilotTaskResponse:
-    repo = await db.get(Repository, repository_id)
-    if not repo or repo.workspace_id != workspace_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Repository {repository_id} not found in workspace",
-        )
+    repo, workspace_id, _membership = auth_ctx
 
     task = await orchestrator.create_task(
         db=db,
@@ -165,19 +211,14 @@ async def create_engineering_task(
 )
 async def list_engineering_tasks(
     repository_id: uuid.UUID,
-    workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
     limit: int = Query(default=50, ge=1, le=100),
-    current_user: User = Depends(get_current_user),
-    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.VIEWER)),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
+        require_devpilot_workspace_role(WorkspaceRole.VIEWER)
+    ),
     db: AsyncSession = Depends(get_db_session),
     orchestrator: DevPilotOrchestrator = Depends(get_devpilot_orchestrator),
 ) -> DevPilotTaskListResponse:
-    repo = await db.get(Repository, repository_id)
-    if not repo or repo.workspace_id != workspace_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Repository {repository_id} not found in workspace",
-        )
+    repo, workspace_id, _membership = auth_ctx
 
     tasks = await orchestrator.list_tasks(
         db=db, workspace_id=workspace_id, repository_id=repository_id, limit=limit
@@ -197,12 +238,13 @@ async def list_engineering_tasks(
 async def get_task_details(
     repository_id: uuid.UUID,
     task_id: uuid.UUID,
-    workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
-    current_user: User = Depends(get_current_user),
-    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.VIEWER)),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
+        require_devpilot_workspace_role(WorkspaceRole.VIEWER)
+    ),
     db: AsyncSession = Depends(get_db_session),
     orchestrator: DevPilotOrchestrator = Depends(get_devpilot_orchestrator),
 ) -> DevPilotTaskResponse:
+    repo, workspace_id, _membership = auth_ctx
     task = await orchestrator.get_task(db=db, task_id=task_id, workspace_id=workspace_id)
     if not task or task.repository_id != repository_id:
         raise HTTPException(
@@ -220,12 +262,13 @@ async def get_task_details(
 async def get_task_plan(
     repository_id: uuid.UUID,
     task_id: uuid.UUID,
-    workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
-    current_user: User = Depends(get_current_user),
-    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.VIEWER)),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
+        require_devpilot_workspace_role(WorkspaceRole.VIEWER)
+    ),
     db: AsyncSession = Depends(get_db_session),
     orchestrator: DevPilotOrchestrator = Depends(get_devpilot_orchestrator),
 ) -> DevPilotPlanResponse:
+    repo, workspace_id, _membership = auth_ctx
     task = await orchestrator.get_task(db=db, task_id=task_id, workspace_id=workspace_id)
     if not task or task.repository_id != repository_id:
         raise HTTPException(
@@ -277,13 +320,15 @@ async def approve_or_reject_plan(
     repository_id: uuid.UUID,
     task_id: uuid.UUID,
     payload: DevPilotApprovePlanRequest,
-    workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
     current_user: User = Depends(get_current_user),
-    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.MEMBER)),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
+        require_devpilot_workspace_role(WorkspaceRole.MEMBER)
+    ),
     _csrf: None = Depends(enforce_csrf_protection),
     db: AsyncSession = Depends(get_db_session),
     orchestrator: DevPilotOrchestrator = Depends(get_devpilot_orchestrator),
 ) -> DevPilotPlanResponse:
+    repo, workspace_id, _membership = auth_ctx
     try:
         plan = await orchestrator.approve_plan(
             db=db,
@@ -349,13 +394,15 @@ async def approve_or_reject_changes(
     repository_id: uuid.UUID,
     task_id: uuid.UUID,
     payload: DevPilotApproveChangesRequest,
-    workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
     current_user: User = Depends(get_current_user),
-    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.MEMBER)),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
+        require_devpilot_workspace_role(WorkspaceRole.MEMBER)
+    ),
     _csrf: None = Depends(enforce_csrf_protection),
     db: AsyncSession = Depends(get_db_session),
     orchestrator: DevPilotOrchestrator = Depends(get_devpilot_orchestrator),
 ) -> DevPilotTaskResponse:
+    repo, workspace_id, _membership = auth_ctx
     try:
         task = await orchestrator.approve_modifications(
             db=db,
@@ -380,12 +427,13 @@ async def approve_or_reject_changes(
 async def get_task_diff(
     repository_id: uuid.UUID,
     task_id: uuid.UUID,
-    workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
-    current_user: User = Depends(get_current_user),
-    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.VIEWER)),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
+        require_devpilot_workspace_role(WorkspaceRole.VIEWER)
+    ),
     db: AsyncSession = Depends(get_db_session),
     orchestrator: DevPilotOrchestrator = Depends(get_devpilot_orchestrator),
 ) -> DevPilotDiffResponse:
+    repo, workspace_id, _membership = auth_ctx
     task = await orchestrator.get_task(db=db, task_id=task_id, workspace_id=workspace_id)
     if not task or task.repository_id != repository_id:
         raise HTTPException(
@@ -427,12 +475,13 @@ async def get_task_diff(
 async def get_task_review(
     repository_id: uuid.UUID,
     task_id: uuid.UUID,
-    workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
-    current_user: User = Depends(get_current_user),
-    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.VIEWER)),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
+        require_devpilot_workspace_role(WorkspaceRole.VIEWER)
+    ),
     db: AsyncSession = Depends(get_db_session),
     orchestrator: DevPilotOrchestrator = Depends(get_devpilot_orchestrator),
 ) -> DevPilotReviewResponse:
+    repo, workspace_id, _membership = auth_ctx
     task = await orchestrator.get_task(db=db, task_id=task_id, workspace_id=workspace_id)
     if not task or task.repository_id != repository_id:
         raise HTTPException(
@@ -470,13 +519,14 @@ async def validate_engineering_task(
     repository_id: uuid.UUID,
     task_id: uuid.UUID,
     payload: DevPilotValidateRequest,
-    workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
-    current_user: User = Depends(get_current_user),
-    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.MEMBER)),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
+        require_devpilot_workspace_role(WorkspaceRole.MEMBER)
+    ),
     _csrf: None = Depends(enforce_csrf_protection),
     db: AsyncSession = Depends(get_db_session),
     orchestrator: DevPilotOrchestrator = Depends(get_devpilot_orchestrator),
 ) -> DevPilotTaskResponse:
+    repo, workspace_id, _membership = auth_ctx
     try:
         task = await orchestrator.validate_task(
             db=db,
@@ -500,13 +550,14 @@ async def validate_engineering_task(
 async def cancel_engineering_task(
     repository_id: uuid.UUID,
     task_id: uuid.UUID,
-    workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
-    current_user: User = Depends(get_current_user),
-    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.MEMBER)),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
+        require_devpilot_workspace_role(WorkspaceRole.MEMBER)
+    ),
     _csrf: None = Depends(enforce_csrf_protection),
     db: AsyncSession = Depends(get_db_session),
     orchestrator: DevPilotOrchestrator = Depends(get_devpilot_orchestrator),
 ) -> DevPilotTaskResponse:
+    repo, workspace_id, _membership = auth_ctx
     try:
         task = await orchestrator.cancel_task(db=db, task_id=task_id, workspace_id=workspace_id)
         return _format_task_response(task)

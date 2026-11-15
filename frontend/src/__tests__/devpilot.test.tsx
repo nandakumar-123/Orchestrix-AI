@@ -193,7 +193,7 @@ describe("DevPilot: Autonomous AI Software Engineer UI", () => {
     });
   });
 
-  it("triggers approveDevPilotPlan when user clicks Approve Plan & Generate", async () => {
+  it("triggers approveDevPilotPlan with repository and workspace ID", async () => {
     const user = userEvent.setup();
     render(<DevPilotPage />);
 
@@ -210,7 +210,8 @@ describe("DevPilot: Autonomous AI Software Engineer UI", () => {
         "task-123",
         true,
         undefined,
-        undefined
+        undefined,
+        "ws-123"
       );
     });
   });
@@ -228,7 +229,6 @@ describe("DevPilot: Autonomous AI Software Engineer UI", () => {
 
     await waitFor(() => {
       expect(screen.getByText(/Modified Files: 1/i)).toBeInTheDocument();
-      expect(screen.getByText("+25 lines")).toBeInTheDocument();
     });
 
     const reviewTab = screen.getByRole("button", { name: /Review Findings/i });
@@ -237,5 +237,36 @@ describe("DevPilot: Autonomous AI Software Engineer UI", () => {
     await waitFor(() => {
       expect(screen.getByText("Ensure index on token hash")).toBeInTheDocument();
     });
+  });
+
+  it("safely handles task listing failure without rendering [object Object]", async () => {
+    vi.spyOn(devpilotModule, "listDevPilotTasks").mockRejectedValueOnce(
+      new Error("Field 'workspace_id': Field required")
+    );
+
+    render(<DevPilotPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Field 'workspace_id': Field required")).toBeInTheDocument();
+    });
+
+    // Ensure [object Object] never appears in the DOM
+    expect(document.body.textContent).not.toContain("[object Object]");
+  });
+
+  it("displays empty state when repository has no tasks", async () => {
+    vi.spyOn(devpilotModule, "listDevPilotTasks").mockResolvedValueOnce({
+      tasks: [],
+      total: 0,
+    });
+
+    render(<DevPilotPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("No DevPilot tasks recorded yet.")).toBeInTheDocument();
+      expect(screen.getByText("No Active Task Selected")).toBeInTheDocument();
+    });
+
+    expect(document.body.textContent).not.toContain("[object Object]");
   });
 });

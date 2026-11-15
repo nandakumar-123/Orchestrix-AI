@@ -519,3 +519,98 @@ async def test_devpilot_rest_api_pipeline(
     )
     assert cancel_resp.status_code == 200
     assert cancel_resp.json()["status"] == "CANCELLED"
+
+
+@pytest.mark.asyncio
+async def test_devpilot_workspace_resolution_and_authorization(
+    api_client: AsyncClient,
+    test_db_session: AsyncSession,
+) -> None:
+    """
+    Test resilient workspace resolution and authorization security:
+    1. List tasks with workspace_id omitted (resolves repository's workspace automatically).
+    2. Empty task list returns 200 OK with total: 0.
+    3. Mismatched workspace_id returns 404 Not Found.
+    4. Non-existent repository returns 404 Not Found.
+    5. Unauthorized user returns 403 Forbidden.
+    """
+    ws_id = uuid.uuid4()
+    repo_id = uuid.uuid4()
+    member_user_id = uuid.uuid4()
+    unauthorized_user_id = uuid.uuid4()
+    inst_id = uuid.uuid4()
+
+    member_user = User(
+        id=member_user_id,
+        email="authorized@example.com",
+        full_name="Authorized User",
+        is_active=True,
+    )
+    unauthorized_user = User(
+        id=unauthorized_user_id,
+        email="stranger@example.com",
+        full_name="Stranger User",
+        is_active=True,
+    )
+    workspace = Workspace(id=ws_id, name="Secure Workspace", slug="secure-workspace")
+    membership = WorkspaceMembership(
+        id=uuid.uuid4(), workspace_id=ws_id, user_id=member_user_id, role=WorkspaceRole.MEMBER
+    )
+    installation = GitHubInstallation(
+        id=inst_id,
+        workspace_id=ws_id,
+        installation_id=992211,
+        account_login="secure-org",
+        account_type="Organization",
+        account_id=992211,
+    )
+    repo = Repository(
+        id=repo_id,
+        workspace_id=ws_id,
+        installation_id=inst_id,
+        github_repository_id=883322,
+        name="payment-gateway",
+        full_name="secure-org/payment-gateway",
+        owner_login="secure-org",
+        html_url="https://github.com/secure-org/payment-gateway",
+        default_branch="main",
+        is_active=True,
+    )
+    test_db_session.add_all(
+        [member_user, unauthorized_user, workspace, membership, installation, repo]
+    )
+    await test_db_session.flush()
+
+    # Case 1: Authorized user queries tasks WITHOUT workspace_id in query string
+    app.dependency_overrides[get_current_user] = lambda: member_user
+    res_no_ws = await api_client.get(f"/api/v1/repositories/{repo_id}/devpilot/tasks")
+    assert res_no_ws.status_code == 200
+    data_no_ws = res_no_ws.json()
+    assert data_no_ws["total"] == 0
+    assert data_no_ws["tasks"] == []
+
+    # Case 2: Authorized user queries tasks WITH valid workspace_id
+    res_with_ws = await api_client.get(
+        f"/api/v1/repositories/{repo_id}/devpilot/tasks?workspace_id={ws_id}"
+    )
+    assert res_with_ws.status_code == 200
+    assert res_with_ws.json()["total"] == 0
+
+    # Case 3: Mismatched workspace_id returns 404
+    foreign_ws_id = uuid.uuid4()
+    res_mismatch = await api_client.get(
+        f"/api/v1/repositories/{repo_id}/devpilot/tasks?workspace_id={foreign_ws_id}"
+    )
+    assert res_mismatch.status_code == 404
+    assert "not found in workspace" in res_mismatch.json()["detail"]
+
+    # Case 4: Non-existent repository returns 404
+    random_repo_id = uuid.uuid4()
+    res_not_found = await api_client.get(f"/api/v1/repositories/{random_repo_id}/devpilot/tasks")
+    assert res_not_found.status_code == 404
+
+    # Case 5: Unauthorized user (no workspace membership) returns 403 Forbidden
+    app.dependency_overrides[get_current_user] = lambda: unauthorized_user
+    res_forbidden = await api_client.get(f"/api/v1/repositories/{repo_id}/devpilot/tasks")
+    assert res_forbidden.status_code == 403
+    assert "Access denied" in res_forbidden.json()["detail"]

@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 
 import { fetchCurrentUser } from "@/lib/auth";
+import { normalizeApiError } from "@/lib/api-error";
 import { fetchWorkspaceRepositories, WorkspaceRepository } from "@/lib/github";
 import {
   DevPilotTaskDetail,
@@ -69,6 +70,7 @@ const LIFECYCLE_STEPS = [
 export default function DevPilotPage() {
   const [repositories, setRepositories] = React.useState<WorkspaceRepository[]>([]);
   const [selectedRepoId, setSelectedRepoId] = React.useState<string>("");
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = React.useState<string>("");
 
   // Task creation state
   const [taskType, setTaskType] = React.useState<DevPilotTaskType>("FEATURE");
@@ -97,26 +99,27 @@ export default function DevPilotPage() {
   const [activeTab, setActiveTab] = React.useState<"plan" | "diff" | "review" | "validation">("plan");
 
   const selectTask = React.useCallback(
-    async (task: DevPilotTaskDetail, repoId: string = selectedRepoId) => {
+    async (task: DevPilotTaskDetail, repoId: string = selectedRepoId, wsId?: string) => {
       setLoadingTask(true);
       setErrorMessage(null);
+      const effectiveWsId = wsId || selectedWorkspaceId;
       try {
-        const detail = await getDevPilotTask(repoId, task.id);
+        const detail = await getDevPilotTask(repoId, task.id, effectiveWsId);
         setActiveTask(detail);
 
         if (detail.latest_plan) {
           setPlan(detail.latest_plan);
         } else {
-          getDevPilotPlan(repoId, task.id)
+          getDevPilotPlan(repoId, task.id, effectiveWsId)
             .then(setPlan)
             .catch(() => setPlan(null));
         }
 
-        getDevPilotDiff(repoId, task.id)
+        getDevPilotDiff(repoId, task.id, effectiveWsId)
           .then(setDiff)
           .catch(() => setDiff(null));
 
-        getDevPilotReview(repoId, task.id)
+        getDevPilotReview(repoId, task.id, effectiveWsId)
           .then(setReview)
           .catch(() => setReview(null));
 
@@ -133,29 +136,32 @@ export default function DevPilotPage() {
           setActiveTab("validation");
         }
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = normalizeApiError(err, "Failed to load task details");
         setErrorMessage(msg);
       } finally {
         setLoadingTask(false);
       }
     },
-    [selectedRepoId]
+    [selectedRepoId, selectedWorkspaceId]
   );
 
   const refreshTasks = React.useCallback(
-    async (repoId: string) => {
+    async (repoId: string, wsId?: string) => {
       if (!repoId) return;
+      const effectiveWsId = wsId || selectedWorkspaceId;
       try {
-        const res = await listDevPilotTasks(repoId, { limit: 20 });
+        const res = await listDevPilotTasks(repoId, { limit: 20, workspaceId: effectiveWsId });
         setTaskList(res.tasks);
         if (res.tasks.length > 0 && !activeTask) {
-          selectTask(res.tasks[0], repoId);
+          selectTask(res.tasks[0], repoId, effectiveWsId);
         }
       } catch (err: unknown) {
-        console.error("Failed to list tasks:", err);
+        const msg = normalizeApiError(err, "Failed to load tasks");
+        console.error("Failed to list tasks:", msg);
+        setErrorMessage(msg);
       }
     },
-    [activeTask, selectTask]
+    [activeTask, selectTask, selectedWorkspaceId]
   );
 
   // Load repositories and initial workspace
@@ -165,16 +171,21 @@ export default function DevPilotPage() {
         const u = await fetchCurrentUser();
         if (u && u.workspaces && u.workspaces.length > 0) {
           const wsId = u.workspaces[0].workspace_id;
+          setSelectedWorkspaceId(wsId);
           const repos = await fetchWorkspaceRepositories(wsId);
           setRepositories(repos);
           if (repos.length > 0) {
-            const firstId = repos[0].id;
-            setSelectedRepoId(firstId);
-            refreshTasks(firstId);
+            const firstRepo = repos[0];
+            setSelectedRepoId(firstRepo.id);
+            const repoWsId = firstRepo.workspace_id || wsId;
+            setSelectedWorkspaceId(repoWsId);
+            refreshTasks(firstRepo.id, repoWsId);
           }
         }
       } catch (err: unknown) {
-        console.error("Failed to initialize DevPilot:", err);
+        const msg = normalizeApiError(err, "Failed to initialize DevPilot workspace");
+        console.error("Failed to initialize DevPilot:", msg);
+        setErrorMessage(msg);
       }
     }
     init();
@@ -192,22 +203,27 @@ export default function DevPilotPage() {
         .map((f) => f.trim())
         .filter(Boolean);
 
-      const newTask = await createDevPilotTask(selectedRepoId, {
-        task_type: taskType,
-        title: taskTitle.trim(),
-        description: taskDescription.trim(),
-        execution_mode: executionMode,
-        files_of_interest: files.length > 0 ? files : undefined,
-        auto_validate_tests: true,
-      });
+      const newTask = await createDevPilotTask(
+        selectedRepoId,
+        {
+          task_type: taskType,
+          title: taskTitle.trim(),
+          description: taskDescription.trim(),
+          prompt: taskDescription.trim(),
+          execution_mode: executionMode,
+          files_of_interest: files.length > 0 ? files : undefined,
+          auto_validate_tests: true,
+        },
+        selectedWorkspaceId
+      );
 
       setTaskTitle("");
       setTaskDescription("");
       setFilesOfInterest("");
-      await refreshTasks(selectedRepoId);
-      selectTask(newTask, selectedRepoId);
+      await refreshTasks(selectedRepoId, selectedWorkspaceId);
+      selectTask(newTask, selectedRepoId, selectedWorkspaceId);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = normalizeApiError(err, "Failed to create task");
       setErrorMessage(msg);
     } finally {
       setIsSubmitting(false);
@@ -224,15 +240,16 @@ export default function DevPilotPage() {
         activeTask.id,
         approved,
         approved ? undefined : rejectionReason,
-        approvalComment || undefined
+        approvalComment || undefined,
+        selectedWorkspaceId
       );
       setActiveTask(updated);
       setApprovalComment("");
       setRejectionReason("");
-      await selectTask(updated, selectedRepoId);
-      await refreshTasks(selectedRepoId);
+      await selectTask(updated, selectedRepoId, selectedWorkspaceId);
+      await refreshTasks(selectedRepoId, selectedWorkspaceId);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = normalizeApiError(err, "Failed to process plan approval");
       setErrorMessage(msg);
     } finally {
       setIsApproving(false);
@@ -249,15 +266,16 @@ export default function DevPilotPage() {
         activeTask.id,
         approved,
         approved ? undefined : rejectionReason,
-        approvalComment || undefined
+        approvalComment || undefined,
+        selectedWorkspaceId
       );
       setActiveTask(updated);
       setApprovalComment("");
       setRejectionReason("");
-      await selectTask(updated, selectedRepoId);
-      await refreshTasks(selectedRepoId);
+      await selectTask(updated, selectedRepoId, selectedWorkspaceId);
+      await refreshTasks(selectedRepoId, selectedWorkspaceId);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = normalizeApiError(err, "Failed to process modification approval");
       setErrorMessage(msg);
     } finally {
       setIsApproving(false);
@@ -267,12 +285,19 @@ export default function DevPilotPage() {
   const handleTriggerValidation = async () => {
     if (!activeTask) return;
     setIsApproving(true);
+    setErrorMessage(null);
     try {
-      const valRes = await triggerDevPilotValidation(selectedRepoId, activeTask.id, true);
+      const valRes = await triggerDevPilotValidation(
+        selectedRepoId,
+        activeTask.id,
+        true,
+        undefined,
+        selectedWorkspaceId
+      );
       setValidation(valRes);
-      await selectTask(activeTask, selectedRepoId);
+      await selectTask(activeTask, selectedRepoId, selectedWorkspaceId);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = normalizeApiError(err, "Failed to trigger validation pipeline");
       setErrorMessage(msg);
     } finally {
       setIsApproving(false);
@@ -283,11 +308,16 @@ export default function DevPilotPage() {
     if (!activeTask) return;
     if (!confirm("Are you sure you want to cancel this DevPilot task?")) return;
     try {
-      const updated = await cancelDevPilotTask(selectedRepoId, activeTask.id, "User requested cancellation");
+      const updated = await cancelDevPilotTask(
+        selectedRepoId,
+        activeTask.id,
+        "User requested cancellation",
+        selectedWorkspaceId
+      );
       setActiveTask(updated);
-      await refreshTasks(selectedRepoId);
+      await refreshTasks(selectedRepoId, selectedWorkspaceId);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = normalizeApiError(err, "Failed to cancel task");
       setErrorMessage(msg);
     }
   };
@@ -330,7 +360,13 @@ export default function DevPilotPage() {
               onChange={(e) => {
                 const nextId = e.target.value;
                 setSelectedRepoId(nextId);
-                refreshTasks(nextId);
+                const r = repositories.find((x) => x.id === nextId);
+                const wsId = r?.workspace_id || selectedWorkspaceId;
+                if (r?.workspace_id) {
+                  setSelectedWorkspaceId(r.workspace_id);
+                }
+                setActiveTask(null);
+                refreshTasks(nextId, wsId);
               }}
             >
               {repositories.length === 0 ? (
@@ -346,7 +382,7 @@ export default function DevPilotPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => refreshTasks(selectedRepoId)}
+              onClick={() => refreshTasks(selectedRepoId, selectedWorkspaceId)}
               className="gap-2"
             >
               <RefreshCw className="h-4 w-4" />
@@ -485,20 +521,34 @@ export default function DevPilotPage() {
                     <ListTodo className="h-4 w-4" />
                     Task History ({taskList.length})
                   </span>
+                  {selectedRepoId && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => refreshTasks(selectedRepoId, selectedWorkspaceId)}
+                    >
+                      <RefreshCw className="h-3 w-3 mr-1" />
+                      Reload
+                    </Button>
+                  )}
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2 max-h-[380px] overflow-y-auto">
                 {taskList.length === 0 ? (
-                  <p className="text-xs text-muted-foreground text-center py-6">
-                    No DevPilot tasks recorded yet. Create one above to begin.
-                  </p>
+                  <div className="text-xs text-muted-foreground text-center py-6 space-y-2">
+                    <p>No DevPilot tasks recorded yet.</p>
+                    <p className="text-[11px] text-muted-foreground/80">
+                      Create an engineering task above or reload to inspect existing tasks.
+                    </p>
+                  </div>
                 ) : (
                   taskList.map((t) => {
                     const isSelected = activeTask?.id === t.id;
                     return (
                       <div
                         key={t.id}
-                        onClick={() => selectTask(t)}
+                        onClick={() => selectTask(t, selectedRepoId, selectedWorkspaceId)}
                         className={`p-3 rounded-lg border text-left cursor-pointer transition-all ${
                           isSelected
                             ? "border-primary bg-primary/5 shadow-sm"
@@ -516,10 +566,12 @@ export default function DevPilotPage() {
                         <div className="flex items-center justify-between text-xs text-muted-foreground">
                           <span>{getStatusBadge(t.status)}</span>
                           <span className="text-[11px]">
-                            {new Date(t.created_at).toLocaleTimeString([], {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
+                            {t.created_at
+                              ? new Date(t.created_at).toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })
+                              : "Just now"}
                           </span>
                         </div>
                       </div>
@@ -540,6 +592,17 @@ export default function DevPilotPage() {
                   Select an existing task from the history list or initiate a new task to view the
                   structured engineering plan, code diff, review findings, and validation suite.
                 </p>
+                {selectedRepoId && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => refreshTasks(selectedRepoId, selectedWorkspaceId)}
+                    className="gap-2 mx-auto"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    Check for Existing Tasks
+                  </Button>
+                )}
               </Card>
             ) : (
               <>
@@ -554,7 +617,7 @@ export default function DevPilotPage() {
                           </Badge>
                           {getStatusBadge(activeTask.status)}
                           <span className="text-xs text-muted-foreground">
-                            ID: {activeTask.id.substring(0, 8)}...
+                            ID: {activeTask.id ? activeTask.id.substring(0, 8) : "..."}...
                           </span>
                         </div>
                         <CardTitle className="text-xl font-bold">{activeTask.title}</CardTitle>
@@ -574,7 +637,7 @@ export default function DevPilotPage() {
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => selectTask(activeTask)}
+                          onClick={() => selectTask(activeTask, selectedRepoId, selectedWorkspaceId)}
                           disabled={loadingTask}
                           className="gap-1 text-xs"
                         >
@@ -772,7 +835,7 @@ export default function DevPilotPage() {
                                 </span>
                                 <div className="flex items-center gap-2 mt-1">
                                   <span className="text-xl font-bold font-mono">
-                                    {plan.exposure_score.toFixed(1)}/100
+                                    {(plan.exposure_score || 0).toFixed(1)}/100
                                   </span>
                                   <Badge
                                     className={
@@ -802,7 +865,7 @@ export default function DevPilotPage() {
                                   Step Count
                                 </span>
                                 <div className="mt-1 text-sm font-semibold">
-                                  {plan.steps.length} Action Items
+                                  {(plan.steps || []).length} Action Items
                                 </div>
                               </div>
                             </div>
@@ -811,34 +874,34 @@ export default function DevPilotPage() {
                             <div className="space-y-3">
                               <div className="p-3 rounded-md border bg-card">
                                 <h4 className="font-bold text-foreground mb-1">1. Summary & Task Understanding</h4>
-                                <p className="text-muted-foreground">{plan.summary}</p>
+                                <p className="text-muted-foreground">{plan.summary || "(No summary provided)"}</p>
                                 <p className="mt-1 text-foreground/90 font-mono text-[11px]">
-                                  {plan.task_understanding}
+                                  {plan.task_understanding || ""}
                                 </p>
                               </div>
 
                               <div className="p-3 rounded-md border bg-card">
                                 <h4 className="font-bold text-foreground mb-1">2. Architectural Context & Impact</h4>
-                                <p className="text-muted-foreground">{plan.architectural_context}</p>
-                                <p className="mt-1 text-muted-foreground">{plan.blast_radius_summary}</p>
+                                <p className="text-muted-foreground">{plan.architectural_context || "(No context provided)"}</p>
+                                <p className="mt-1 text-muted-foreground">{plan.blast_radius_summary || ""}</p>
                               </div>
 
                               <div className="p-3 rounded-md border bg-card">
                                 <h4 className="font-bold text-foreground mb-1">3. Rollback & Testing Strategy</h4>
-                                <p className="text-muted-foreground mb-1"><strong>Rollback:</strong> {plan.rollback_strategy}</p>
-                                <p className="text-muted-foreground"><strong>Testing:</strong> {plan.testing_strategy}</p>
+                                <p className="text-muted-foreground mb-1"><strong>Rollback:</strong> {plan.rollback_strategy || "Standard git revert"}</p>
+                                <p className="text-muted-foreground"><strong>Testing:</strong> {plan.testing_strategy || "Automated regression tests"}</p>
                               </div>
 
                               <div className="p-3 rounded-md border bg-card">
                                 <h4 className="font-bold text-foreground mb-1">4. Security Implications</h4>
-                                <p className="text-muted-foreground">{plan.security_implications}</p>
+                                <p className="text-muted-foreground">{plan.security_implications || "No immediate security risks identified."}</p>
                               </div>
 
                               {/* Granular Plan Steps Table */}
                               <div>
                                 <h4 className="font-bold text-foreground mb-2">5. Granular Action Steps</h4>
                                 <div className="border rounded-md divide-y overflow-hidden">
-                                  {plan.steps.map((s) => (
+                                  {(plan.steps || []).map((s) => (
                                     <div key={s.id || s.step_number} className="p-3 bg-card hover:bg-muted/30">
                                       <div className="flex items-center justify-between gap-2 mb-1">
                                         <div className="flex items-center gap-2">
@@ -866,7 +929,7 @@ export default function DevPilotPage() {
                                       </div>
                                       <p className="text-muted-foreground text-[11px] mb-2">{s.description}</p>
                                       <div className="flex flex-wrap gap-1">
-                                        {s.target_files.map((tf) => (
+                                        {(s.target_files || []).map((tf) => (
                                           <span
                                             key={tf}
                                             className="px-1.5 py-0.5 rounded bg-muted text-[10px] font-mono text-muted-foreground"
@@ -888,7 +951,7 @@ export default function DevPilotPage() {
                     {/* Tab 2: Code Modifications & Diff */}
                     {activeTab === "diff" && (
                       <div className="space-y-4 pt-2">
-                        {!diff || diff.changes.length === 0 ? (
+                        {!diff || !diff.changes || diff.changes.length === 0 ? (
                           <div className="p-8 text-center text-muted-foreground text-xs">
                             No code modifications have been generated yet. Complete and approve the plan to
                             generate code.
@@ -931,7 +994,7 @@ export default function DevPilotPage() {
                     {/* Tab 3: Code Review Findings */}
                     {activeTab === "review" && (
                       <div className="space-y-4 pt-2">
-                        {!review || review.findings.length === 0 ? (
+                        {!review || !review.findings || review.findings.length === 0 ? (
                           <div className="p-8 text-center text-muted-foreground text-xs">
                             <ShieldCheck className="h-8 w-8 text-emerald-500 mx-auto mb-2" />
                             No code review findings or defects identified.
@@ -982,9 +1045,10 @@ export default function DevPilotPage() {
                                     </span>
                                   </div>
                                   <p className="text-muted-foreground text-[11px] mb-2">{finding.description}</p>
-                                  {finding.suggested_fix && (
+                                  {(finding.suggested_fix || finding.suggested_correction) && (
                                     <div className="p-2 rounded bg-muted/60 text-[11px] font-mono text-foreground">
-                                      <strong>Suggested Correction:</strong> {finding.suggested_fix}
+                                      <strong>Suggested Correction:</strong>{" "}
+                                      {finding.suggested_fix || finding.suggested_correction}
                                     </div>
                                   )}
                                 </div>
@@ -1016,7 +1080,7 @@ export default function DevPilotPage() {
                           </Button>
                         </div>
 
-                        {!validation || validation.stages.length === 0 ? (
+                        {!validation || !validation.stages || validation.stages.length === 0 ? (
                           <div className="p-8 text-center text-muted-foreground text-xs">
                             No validation run executed yet. Click &apos;Run Validation Pipeline&apos; to execute AST
                             parsing, impact regression scoring, and controlled test execution.
