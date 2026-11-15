@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import desc, func, select
@@ -12,7 +13,11 @@ from app.api.deps import (
     enforce_csrf_protection,
     get_current_user,
 )
-from app.api.v1.devpilot import require_devpilot_workspace_role
+from app.api.v1.permissions import (
+    require_workspace_admin,
+    require_workspace_member,
+    require_workspace_viewer,
+)
 from app.api.v1.schemas_agents import (
     RemediationTaskResponse,
     ScannerAvailabilityResponse,
@@ -26,7 +31,6 @@ from app.api.v1.schemas_agents import (
     SecureFlowStartScanRequest,
     SecureFlowUpdateFindingStatusRequest,
 )
-from app.db.base import WorkspaceRole
 from app.db.models.membership import WorkspaceMembership
 from app.db.models.repository import Repository
 from app.db.models.secureflow import (
@@ -102,7 +106,7 @@ def _format_finding_response(finding: SecureFlowFinding) -> SecureFlowFindingRes
 
 
 # -----------------------------------------------------------------------------
-# 1. Start Security Scan
+# 1. Start Security Scan (MEMBER)
 # -----------------------------------------------------------------------------
 
 
@@ -115,9 +119,7 @@ def _format_finding_response(finding: SecureFlowFinding) -> SecureFlowFindingRes
 async def start_security_scan(
     repository_id: uuid.UUID,
     payload: SecureFlowStartScanRequest | None = None,
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.MEMBER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_member),
     _csrf: None = Depends(enforce_csrf_protection),
     db: AsyncSession = Depends(get_db_session),
     service: SecureFlowService = Depends(get_secureflow_service),
@@ -163,7 +165,7 @@ async def start_security_scan(
 
 
 # -----------------------------------------------------------------------------
-# 2. List Security Scans
+# 2. List Security Scans (VIEWER)
 # -----------------------------------------------------------------------------
 
 
@@ -178,9 +180,7 @@ async def list_security_scans(
     status_filter: str | None = Query(default=None, alias="status"),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.VIEWER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_viewer),
     db: AsyncSession = Depends(get_db_session),
 ) -> SecureFlowScanListResponse:
     repo, workspace_id, _membership = auth_ctx
@@ -207,7 +207,7 @@ async def list_security_scans(
 
 
 # -----------------------------------------------------------------------------
-# 3. Retrieve Scan Details
+# 3. Retrieve Scan Details (VIEWER)
 # -----------------------------------------------------------------------------
 
 
@@ -220,9 +220,7 @@ async def list_security_scans(
 async def get_security_scan(
     repository_id: uuid.UUID,
     scan_id: uuid.UUID,
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.VIEWER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_viewer),
     db: AsyncSession = Depends(get_db_session),
 ) -> SecureFlowScanResponse:
     repo, workspace_id, _membership = auth_ctx
@@ -241,7 +239,7 @@ async def get_security_scan(
 
 
 # -----------------------------------------------------------------------------
-# 4. Scanner Availability & Status
+# 4. Scanner Availability & Status (VIEWER)
 # -----------------------------------------------------------------------------
 
 
@@ -253,9 +251,7 @@ async def get_security_scan(
 )
 async def get_scanner_availability(
     repository_id: uuid.UUID,
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.VIEWER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_viewer),
     service: SecureFlowService = Depends(get_secureflow_service),
 ) -> ScannerAvailabilityResponse:
     # 1. Secret Scanner (internal native engine, always available)
@@ -310,7 +306,7 @@ async def get_scanner_availability(
 
 
 # -----------------------------------------------------------------------------
-# 5. List Security Findings (with filtering by severity and status)
+# 5. List Security Findings (VIEWER)
 # -----------------------------------------------------------------------------
 
 
@@ -333,9 +329,7 @@ async def list_security_findings(
     ),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.VIEWER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_viewer),
     db: AsyncSession = Depends(get_db_session),
 ) -> SecureFlowFindingListResponse:
     repo, workspace_id, _membership = auth_ctx
@@ -366,7 +360,7 @@ async def list_security_findings(
 
 
 # -----------------------------------------------------------------------------
-# 6. Retrieve Individual Finding
+# 6. Retrieve Individual Finding (VIEWER)
 # -----------------------------------------------------------------------------
 
 
@@ -379,9 +373,7 @@ async def list_security_findings(
 async def get_security_finding(
     repository_id: uuid.UUID,
     finding_id: uuid.UUID,
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.VIEWER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_viewer),
     db: AsyncSession = Depends(get_db_session),
 ) -> SecureFlowFindingResponse:
     repo, workspace_id, _membership = auth_ctx
@@ -400,7 +392,7 @@ async def get_security_finding(
 
 
 # -----------------------------------------------------------------------------
-# 7. Update Finding Status
+# 7. Update Finding Status (MEMBER)
 # -----------------------------------------------------------------------------
 
 
@@ -414,9 +406,7 @@ async def update_finding_status(
     repository_id: uuid.UUID,
     finding_id: uuid.UUID,
     payload: SecureFlowUpdateFindingStatusRequest,
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.MEMBER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_member),
     _csrf: None = Depends(enforce_csrf_protection),
     db: AsyncSession = Depends(get_db_session),
     service: SecureFlowService = Depends(get_secureflow_service),
@@ -449,7 +439,7 @@ async def update_finding_status(
 
 
 # -----------------------------------------------------------------------------
-# 8. Retrieve Scan Audit Events
+# 8. Retrieve Scan Audit Events (VIEWER)
 # -----------------------------------------------------------------------------
 
 
@@ -464,9 +454,7 @@ async def get_scan_events(
     scan_id: uuid.UUID,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.VIEWER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_viewer),
     db: AsyncSession = Depends(get_db_session),
 ) -> SecureFlowScanEventListResponse:
     repo, workspace_id, _membership = auth_ctx
@@ -509,7 +497,7 @@ async def get_scan_events(
 
 
 # -----------------------------------------------------------------------------
-# 9. Request DevPilot Remediation for Finding
+# 9. Request DevPilot Remediation (MEMBER)
 # -----------------------------------------------------------------------------
 
 
@@ -522,9 +510,7 @@ async def get_scan_events(
 async def create_remediation_task(
     repository_id: uuid.UUID,
     finding_id: uuid.UUID,
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.MEMBER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_member),
     _csrf: None = Depends(enforce_csrf_protection),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
@@ -569,7 +555,7 @@ async def create_remediation_task(
 
 
 # -----------------------------------------------------------------------------
-# 10. Retrieve Associated Remediation Task
+# 10. Retrieve Associated Remediation Task (VIEWER)
 # -----------------------------------------------------------------------------
 
 
@@ -582,9 +568,7 @@ async def create_remediation_task(
 async def get_remediation_task(
     repository_id: uuid.UUID,
     finding_id: uuid.UUID,
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.VIEWER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_viewer),
     db: AsyncSession = Depends(get_db_session),
 ) -> RemediationTaskResponse | None:
     repo, workspace_id, _membership = auth_ctx
@@ -612,3 +596,29 @@ async def get_remediation_task(
         requires_plan_approval=True,
         requires_code_approval=True,
     )
+
+
+# -----------------------------------------------------------------------------
+# 11. Security Administration Policy Inspection (ADMIN / OWNER)
+# -----------------------------------------------------------------------------
+
+
+@secureflow_router.get(
+    "/{repository_id}/secureflow/admin/policy",
+    status_code=status.HTTP_200_OK,
+    summary="Retrieve workspace-level security administrative policy configuration (Admin/Owner only)",
+)
+async def get_security_policy(
+    repository_id: uuid.UUID,
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_admin),
+) -> dict[str, Any]:
+    repo, workspace_id, membership = auth_ctx
+    return {
+        "workspace_id": str(workspace_id),
+        "repository_id": str(repo.id),
+        "effective_role": membership.role.value,
+        "enforce_remediation_approval_gates": True,
+        "allowed_scanners": ["secret-scanner", "pip-audit", "npm-audit", "osv-scanner", "semgrep"],
+        "secret_scrubbing_mandatory": True,
+        "auto_push_blocked": True,
+    }

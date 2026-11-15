@@ -8,11 +8,34 @@ TestPilot is Orchestrix AI's autonomous software testing agent. It detects testi
 
 All TestPilot endpoints require:
 1. **User Authentication**: Valid session cookie or `Authorization: Bearer <token>`.
-2. **Workspace Authorization**: Active workspace membership (`VIEWER` for read/detect operations, `MEMBER` or higher for generate, approve, reject, execute, diagnose, and cancel).
+2. **Workspace Role-Based Access Control (RBAC)**:
+   - `VIEWER`: Read-only access (detect frameworks, list/inspect suites, list/inspect executions, view results, view coverage reports, select regression tests).
+   - `MEMBER`: Operational test actions (generate proposed test suites, execute approved suites, diagnose test failures, cancel own/member executions).
+   - `ADMIN` or `OWNER`: Administrative approval gates (approve generated suites, reject proposed suites, cancel any execution).
 3. **Repository Scoping**: Repository must exist and belong to the verified workspace.
 4. **CSRF Protection**: All state-changing requests (`POST`, `PATCH`, `DELETE`) require a valid `X-CSRF-Token` header.
 
 Base prefix: `/api/v1/repositories/{repository_id}/testpilot`
+
+---
+
+## Role Permission Matrix
+
+| Endpoint | Method | Path | Minimum Role | Resource Ownership Check | CSRF Protected |
+|---|---|---|---|---|---|
+| Detect Framework | `POST` | `/{repository_id}/testpilot/detect` | `VIEWER` | Repository in workspace | No |
+| Generate Proposed Suite | `POST` | `/{repository_id}/testpilot/suites` | `MEMBER` | Repository in workspace | Yes |
+| List Test Suites | `GET` | `/{repository_id}/testpilot/suites` | `VIEWER` | Repository in workspace | No |
+| Retrieve Test Suite | `GET` | `/{repository_id}/testpilot/suites/{suite_id}` | `VIEWER` | Suite in repository & workspace | No |
+| Approve Test Suite | `POST` | `/{repository_id}/testpilot/suites/{suite_id}/approve` | `ADMIN` or `OWNER` | Suite in repository & workspace | Yes |
+| Reject Test Suite | `POST` | `/{repository_id}/testpilot/suites/{suite_id}/reject` | `ADMIN` or `OWNER` | Suite in repository & workspace | Yes |
+| Execute Approved Suite | `POST` | `/{repository_id}/testpilot/suites/{suite_id}/execute` | `MEMBER` | Approved suite in repository & workspace | Yes |
+| Retrieve Execution Status | `GET` | `/{repository_id}/testpilot/executions/{execution_id}` | `VIEWER` | Execution in repository & workspace | No |
+| Retrieve Individual Results | `GET` | `/{repository_id}/testpilot/executions/{execution_id}/results` | `VIEWER` | Execution in repository & workspace | No |
+| List Coverage Reports | `GET` | `/{repository_id}/testpilot/coverage` | `VIEWER` | Report in repository & workspace | No |
+| Diagnose Test Failures | `POST` | `/{repository_id}/testpilot/executions/{execution_id}/diagnose` | `MEMBER` | Execution in repository & workspace | Yes |
+| Select Regression Tests | `POST` | `/{repository_id}/testpilot/impact/select` | `VIEWER` | Repository in workspace | No |
+| Cancel Execution | `POST` | `/{repository_id}/testpilot/executions/{execution_id}/cancel` | `MEMBER` | Execution in repository; member ownership or admin | Yes |
 
 ---
 
@@ -109,14 +132,14 @@ Base prefix: `/api/v1/repositories/{repository_id}/testpilot`
 
 ### 5. Approve Test Suite
 - **Method**: `POST /{repository_id}/testpilot/suites/{suite_id}/approve`
-- **Role**: `MEMBER`
-- **Description**: Explicit human approval gate. Transitions status from `GENERATED` to `APPROVED`.
+- **Role**: `ADMIN` or `OWNER`
+- **Description**: Explicit human approval gate. Transitions status from `GENERATED` to `APPROVED`. Requires administrative workspace privileges.
 - **Response** (`200 OK`): Updated `TestPilotSuiteResponse` with `approved_at` and `approved_by`.
 
 ### 6. Reject Test Suite
 - **Method**: `POST /{repository_id}/testpilot/suites/{suite_id}/reject`
-- **Role**: `MEMBER`
-- **Request Body** (optional):
+- **Role**: `ADMIN` or `OWNER`
+- **Description**: Rejects a proposed test suite. Requires administrative workspace privileges.
   ```json
   {
     "reason": "Test cases do not meet project guidelines"

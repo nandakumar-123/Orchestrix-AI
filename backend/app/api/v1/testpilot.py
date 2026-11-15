@@ -12,7 +12,11 @@ from app.api.deps import (
     enforce_csrf_protection,
     get_current_user,
 )
-from app.api.v1.devpilot import require_devpilot_workspace_role
+from app.api.v1.permissions import (
+    require_workspace_admin,
+    require_workspace_member,
+    require_workspace_viewer,
+)
 from app.api.v1.schemas_agents import (
     CoverageReportListResponse,
     CoverageReportResponse,
@@ -131,7 +135,7 @@ def _format_coverage_response(report: TestPilotCoverageReport) -> CoverageReport
 
 
 # -----------------------------------------------------------------------------
-# 1. Detect Framework
+# 1. Detect Framework (VIEWER)
 # -----------------------------------------------------------------------------
 
 
@@ -144,16 +148,13 @@ def _format_coverage_response(report: TestPilotCoverageReport) -> CoverageReport
 async def detect_test_framework(
     repository_id: uuid.UUID,
     payload: TestPilotDetectRequest | None = None,
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.VIEWER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_viewer),
     service: TestPilotService = Depends(get_testpilot_service),
 ) -> DetectedFrameworkResponse:
     repo, workspace_id, _membership = auth_ctx
     wm = TaskWorkspaceManager()
     target_dir = wm.get_task_workspace_dir(repo.id)
     if payload and payload.subpath:
-        # Prevent path traversal
         clean_sub = payload.subpath.replace("\\", "/").strip().lstrip("/")
         if ".." in clean_sub.split("/"):
             raise HTTPException(
@@ -177,7 +178,7 @@ async def detect_test_framework(
 
 
 # -----------------------------------------------------------------------------
-# 2. Generate Proposed Test Suite
+# 2. Generate Proposed Test Suite (MEMBER)
 # -----------------------------------------------------------------------------
 
 
@@ -190,9 +191,7 @@ async def detect_test_framework(
 async def generate_test_suite(
     repository_id: uuid.UUID,
     payload: TestPilotGenerateSuiteRequest,
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.MEMBER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_member),
     _csrf: None = Depends(enforce_csrf_protection),
     db: AsyncSession = Depends(get_db_session),
     service: TestPilotService = Depends(get_testpilot_service),
@@ -223,7 +222,7 @@ async def generate_test_suite(
 
 
 # -----------------------------------------------------------------------------
-# 3. List Test Suites
+# 3. List Test Suites (VIEWER)
 # -----------------------------------------------------------------------------
 
 
@@ -238,9 +237,7 @@ async def list_test_suites(
     status_filter: str | None = Query(default=None, alias="status"),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.VIEWER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_viewer),
     db: AsyncSession = Depends(get_db_session),
 ) -> TestPilotSuiteListResponse:
     repo, workspace_id, _membership = auth_ctx
@@ -267,7 +264,7 @@ async def list_test_suites(
 
 
 # -----------------------------------------------------------------------------
-# 4. Retrieve Test Suite Details
+# 4. Retrieve Test Suite Details (VIEWER)
 # -----------------------------------------------------------------------------
 
 
@@ -280,9 +277,7 @@ async def list_test_suites(
 async def get_test_suite(
     repository_id: uuid.UUID,
     suite_id: uuid.UUID,
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.VIEWER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_viewer),
     db: AsyncSession = Depends(get_db_session),
 ) -> TestPilotSuiteResponse:
     repo, workspace_id, _membership = auth_ctx
@@ -301,7 +296,7 @@ async def get_test_suite(
 
 
 # -----------------------------------------------------------------------------
-# 5. Approve Test Suite
+# 5. Approve Test Suite (ADMIN or OWNER)
 # -----------------------------------------------------------------------------
 
 
@@ -309,14 +304,12 @@ async def get_test_suite(
     "/{repository_id}/testpilot/suites/{suite_id}/approve",
     response_model=TestPilotSuiteResponse,
     status_code=status.HTTP_200_OK,
-    summary="Approve a generated test suite for execution",
+    summary="Approve a generated test suite for execution (Admin/Owner only)",
 )
 async def approve_test_suite(
     repository_id: uuid.UUID,
     suite_id: uuid.UUID,
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.MEMBER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_admin),
     _csrf: None = Depends(enforce_csrf_protection),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
@@ -337,7 +330,7 @@ async def approve_test_suite(
 
 
 # -----------------------------------------------------------------------------
-# 6. Reject Test Suite
+# 6. Reject Test Suite (ADMIN or OWNER)
 # -----------------------------------------------------------------------------
 
 
@@ -345,15 +338,13 @@ async def approve_test_suite(
     "/{repository_id}/testpilot/suites/{suite_id}/reject",
     response_model=TestPilotSuiteResponse,
     status_code=status.HTTP_200_OK,
-    summary="Reject a proposed test suite",
+    summary="Reject a proposed test suite (Admin/Owner only)",
 )
 async def reject_test_suite(
     repository_id: uuid.UUID,
     suite_id: uuid.UUID,
     payload: TestPilotRejectSuiteRequest | None = None,
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.MEMBER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_admin),
     _csrf: None = Depends(enforce_csrf_protection),
     db: AsyncSession = Depends(get_db_session),
 ) -> TestPilotSuiteResponse:
@@ -377,7 +368,7 @@ async def reject_test_suite(
 
 
 # -----------------------------------------------------------------------------
-# 7. Execute Approved Test Suite
+# 7. Execute Approved Test Suite (MEMBER)
 # -----------------------------------------------------------------------------
 
 
@@ -391,9 +382,7 @@ async def execute_test_suite(
     repository_id: uuid.UUID,
     suite_id: uuid.UUID,
     payload: TestPilotExecuteSuiteRequest,
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.MEMBER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_member),
     _csrf: None = Depends(enforce_csrf_protection),
     db: AsyncSession = Depends(get_db_session),
     service: TestPilotService = Depends(get_testpilot_service),
@@ -426,7 +415,7 @@ async def execute_test_suite(
 
 
 # -----------------------------------------------------------------------------
-# 8. Retrieve Execution Details
+# 8. Retrieve Execution Details (VIEWER)
 # -----------------------------------------------------------------------------
 
 
@@ -439,9 +428,7 @@ async def execute_test_suite(
 async def get_test_execution(
     repository_id: uuid.UUID,
     execution_id: uuid.UUID,
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.VIEWER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_viewer),
     db: AsyncSession = Depends(get_db_session),
 ) -> TestExecutionResponse:
     repo, workspace_id, _membership = auth_ctx
@@ -460,7 +447,7 @@ async def get_test_execution(
 
 
 # -----------------------------------------------------------------------------
-# 9. Retrieve Individual Test Results
+# 9. Retrieve Individual Test Results (VIEWER)
 # -----------------------------------------------------------------------------
 
 
@@ -474,9 +461,7 @@ async def get_individual_test_results(
     repository_id: uuid.UUID,
     execution_id: uuid.UUID,
     status_filter: str | None = Query(default=None, alias="status"),
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.VIEWER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_viewer),
     db: AsyncSession = Depends(get_db_session),
 ) -> list[IndividualTestResultResponse]:
     repo, workspace_id, _membership = auth_ctx
@@ -514,7 +499,7 @@ async def get_individual_test_results(
 
 
 # -----------------------------------------------------------------------------
-# 10. Coverage Reports
+# 10. Coverage Reports (VIEWER)
 # -----------------------------------------------------------------------------
 
 
@@ -529,9 +514,7 @@ async def list_coverage_reports(
     execution_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.VIEWER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_viewer),
     db: AsyncSession = Depends(get_db_session),
 ) -> CoverageReportListResponse:
     repo, workspace_id, _membership = auth_ctx
@@ -557,7 +540,7 @@ async def list_coverage_reports(
 
 
 # -----------------------------------------------------------------------------
-# 11. Diagnose Test Failures
+# 11. Diagnose Test Failures (MEMBER)
 # -----------------------------------------------------------------------------
 
 
@@ -571,9 +554,7 @@ async def diagnose_test_failure(
     repository_id: uuid.UUID,
     execution_id: uuid.UUID,
     payload: TestPilotDiagnoseRequest | None = None,
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.MEMBER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_member),
     _csrf: None = Depends(enforce_csrf_protection),
     db: AsyncSession = Depends(get_db_session),
     service: TestPilotService = Depends(get_testpilot_service),
@@ -612,7 +593,7 @@ async def diagnose_test_failure(
 
 
 # -----------------------------------------------------------------------------
-# 12. Regression Test Selection via ImpactMind
+# 12. Regression Test Selection via ImpactMind (VIEWER)
 # -----------------------------------------------------------------------------
 
 
@@ -625,9 +606,7 @@ async def diagnose_test_failure(
 async def select_regression_tests(
     repository_id: uuid.UUID,
     payload: TestPilotImpactSelectionRequest,
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.VIEWER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_viewer),
     service: TestPilotService = Depends(get_testpilot_service),
 ) -> ImpactTestSelectionResponse:
     repo, workspace_id, _membership = auth_ctx
@@ -652,7 +631,7 @@ async def select_regression_tests(
 
 
 # -----------------------------------------------------------------------------
-# 13. Cancel Execution
+# 13. Cancel Execution (MEMBER; Owner/Admin or Initiator)
 # -----------------------------------------------------------------------------
 
 
@@ -665,13 +644,12 @@ async def select_regression_tests(
 async def cancel_test_execution(
     repository_id: uuid.UUID,
     execution_id: uuid.UUID,
-    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(
-        require_devpilot_workspace_role(WorkspaceRole.MEMBER)
-    ),
+    auth_ctx: tuple[Repository, uuid.UUID, WorkspaceMembership] = Depends(require_workspace_member),
     _csrf: None = Depends(enforce_csrf_protection),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> TestExecutionResponse:
-    repo, workspace_id, _membership = auth_ctx
+    repo, workspace_id, membership = auth_ctx
     stmt = select(TestPilotExecution).where(
         TestPilotExecution.id == execution_id,
         TestPilotExecution.workspace_id == workspace_id,
@@ -683,6 +661,16 @@ async def cancel_test_execution(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Test execution {execution_id} not found",
         )
+
+    # Resource ownership check: If not Admin or Owner, member must be suite creator / approver if available
+    is_admin = membership.role in (WorkspaceRole.ADMIN, WorkspaceRole.OWNER)
+    if not is_admin and execution.suite and execution.suite.approved_by:
+        # A standard member can only cancel executions on suites they approved/manage
+        if execution.suite.approved_by != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: Only workspace admins or the suite approver can cancel this execution",
+            )
 
     if execution.status in {"PASSED", "FAILED", "ERROR", "TIMED_OUT", "CANCELLED", "BLOCKED"}:
         raise HTTPException(

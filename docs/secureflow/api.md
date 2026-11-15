@@ -8,11 +8,32 @@ SecureFlow is Orchestrix AI's application security analysis agent. It orchestrat
 
 All SecureFlow endpoints require:
 1. **User Authentication**: Valid session cookie or `Authorization: Bearer <token>`.
-2. **Workspace Authorization**: Active workspace membership (`VIEWER` for inspection/listing, `MEMBER` or higher for running scans, updating triage statuses, and requesting DevPilot remediation).
+2. **Workspace Role-Based Access Control (RBAC)**:
+   - `VIEWER`: Read-only access (list/inspect scans, retrieve scanner availability, list/inspect findings, list scan audit events, inspect remediation link).
+   - `MEMBER`: Operational security actions (start security scans, update finding triage status, request DevPilot remediation).
+   - `ADMIN` or `OWNER`: Administrative policy access (workspace-level security administration and scanner configuration).
 3. **Repository Scoping**: Repository must exist and belong to the verified workspace.
 4. **CSRF Protection**: All state-changing requests (`POST`, `PATCH`, `DELETE`) require a valid `X-CSRF-Token` header.
 
 Base prefix: `/api/v1/repositories/{repository_id}/secureflow`
+
+---
+
+## Role Permission Matrix
+
+| Endpoint | Method | Path | Minimum Role | Resource Ownership Check | CSRF Protected |
+|---|---|---|---|---|---|
+| Start Security Scan | `POST` | `/{repository_id}/secureflow/scans` | `MEMBER` | Repository in workspace | Yes |
+| List Security Scans | `GET` | `/{repository_id}/secureflow/scans` | `VIEWER` | Repository in workspace | No |
+| Retrieve Scan Details | `GET` | `/{repository_id}/secureflow/scans/{scan_id}` | `VIEWER` | Scan in repository & workspace | No |
+| Scanner Availability & Status | `GET` | `/{repository_id}/secureflow/scanners` | `VIEWER` | Repository in workspace | No |
+| List Security Findings | `GET` | `/{repository_id}/secureflow/findings` | `VIEWER` | Repository in workspace | No |
+| Retrieve Individual Finding | `GET` | `/{repository_id}/secureflow/findings/{finding_id}` | `VIEWER` | Finding in repository & workspace | No |
+| Update Finding Triage Status | `PATCH` | `/{repository_id}/secureflow/findings/{finding_id}/status` | `MEMBER` | Finding in repository & workspace | Yes |
+| Retrieve Scan Audit Events | `GET` | `/{repository_id}/secureflow/scans/{scan_id}/events` | `VIEWER` | Scan in repository & workspace | No |
+| Request DevPilot Remediation | `POST` | `/{repository_id}/secureflow/findings/{finding_id}/remediate` | `MEMBER` | Finding in repository & workspace | Yes |
+| Retrieve Remediation Task | `GET` | `/{repository_id}/secureflow/findings/{finding_id}/remediation` | `VIEWER` | Finding in repository & workspace | No |
+| Security Policy Administration | `GET` | `/{repository_id}/secureflow/admin/policy` | `ADMIN` or `OWNER` | Repository in workspace | No |
 
 ---
 
