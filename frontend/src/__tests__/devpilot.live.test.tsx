@@ -1,11 +1,12 @@
 import { render, screen, waitFor } from "@testing-library/react";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import DevPilotPage from "../app/devpilot/page";
+
+const itLive = process.env.RUN_LIVE_TESTS ? it : it.skip;
 
 describe("Live DevPilot Authenticated Integration Test", () => {
   const SESSION_COOKIE = "vAMSFb6fj7YZrikx2ywNsy3GJjkM5f2UHgeH0S7d8ws";
   const CSRF_COOKIE = "34eiA8wxuSh-cdSOrXCzHTSP3OBWZHxJVllNyAUs3pM.b80108b95b54fec3b9e0c999fe9492a29a283c05eeb15a537423479a85aa0c4e";
-  const LIVE_API_URL = "http://localhost:8000";
 
   beforeAll(() => {
     // Set cookie on JSDOM document
@@ -31,7 +32,7 @@ describe("Live DevPilot Authenticated Integration Test", () => {
     };
   });
 
-  it(
+  itLive(
     "authenticates live session, lists real repositories, and populates DevPilot tasks without [object Object]",
     async () => {
       render(<DevPilotPage />);

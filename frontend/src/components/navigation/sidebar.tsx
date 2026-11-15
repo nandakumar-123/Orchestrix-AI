@@ -52,8 +52,8 @@ const NAVIGATION_GROUPS: NavGroup[] = [
       { title: "AI Agents", href: "/agents", icon: Bot, badge: "6 Active" },
       { title: "Tasks & Tickets", href: "/tasks", icon: CheckSquare },
       { title: "Change Intelligence", href: "/impact", icon: Network },
-      { title: "Testing", href: "/testing", icon: FlaskConical },
-      { title: "Security", href: "/security", icon: ShieldAlert },
+      { title: "TestPilot (Testing)", href: "/testing", icon: FlaskConical, badge: "Phase 13" },
+      { title: "SecureFlow (Security)", href: "/security", icon: ShieldAlert, badge: "Phase 13" },
     ],
   },
   {
