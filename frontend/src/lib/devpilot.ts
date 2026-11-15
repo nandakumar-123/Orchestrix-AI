@@ -160,13 +160,11 @@ export interface DevPilotTaskListResponse {
   total: number;
 }
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
-
 export async function createDevPilotTask(
   repositoryId: string,
   data: DevPilotTaskCreateRequest
 ): Promise<DevPilotTaskDetail> {
-  const res = await fetchWithAuth(`${API_BASE}/repositories/${repositoryId}/devpilot/tasks`, {
+  const res = await fetchWithAuth(`/api/v1/repositories/${repositoryId}/devpilot/tasks`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -189,7 +187,7 @@ export async function listDevPilotTasks(
   if (params?.offset) q.set("offset", params.offset.toString());
 
   const res = await fetchWithAuth(
-    `${API_BASE}/repositories/${repositoryId}/devpilot/tasks?${q.toString()}`
+    `/api/v1/repositories/${repositoryId}/devpilot/tasks?${q.toString()}`
   );
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -203,7 +201,7 @@ export async function getDevPilotTask(
   taskId: string
 ): Promise<DevPilotTaskDetail> {
   const res = await fetchWithAuth(
-    `${API_BASE}/repositories/${repositoryId}/devpilot/tasks/${taskId}`
+    `/api/v1/repositories/${repositoryId}/devpilot/tasks/${taskId}`
   );
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -217,7 +215,7 @@ export async function getDevPilotPlan(
   taskId: string
 ): Promise<DevPilotEngineeringPlan> {
   const res = await fetchWithAuth(
-    `${API_BASE}/repositories/${repositoryId}/devpilot/tasks/${taskId}/plan`
+    `/api/v1/repositories/${repositoryId}/devpilot/tasks/${taskId}/plan`
   );
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -234,7 +232,7 @@ export async function approveDevPilotPlan(
   feedback?: string
 ): Promise<DevPilotTaskDetail> {
   const res = await fetchWithAuth(
-    `${API_BASE}/repositories/${repositoryId}/devpilot/tasks/${taskId}/approve-plan`,
+    `/api/v1/repositories/${repositoryId}/devpilot/tasks/${taskId}/approve-plan`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -260,7 +258,7 @@ export async function approveDevPilotChanges(
   feedback?: string
 ): Promise<DevPilotTaskDetail> {
   const res = await fetchWithAuth(
-    `${API_BASE}/repositories/${repositoryId}/devpilot/tasks/${taskId}/approve-changes`,
+    `/api/v1/repositories/${repositoryId}/devpilot/tasks/${taskId}/approve-changes`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -283,7 +281,7 @@ export async function getDevPilotDiff(
   taskId: string
 ): Promise<DevPilotDiffResponse> {
   const res = await fetchWithAuth(
-    `${API_BASE}/repositories/${repositoryId}/devpilot/tasks/${taskId}/diff`
+    `/api/v1/repositories/${repositoryId}/devpilot/tasks/${taskId}/diff`
   );
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -297,7 +295,7 @@ export async function getDevPilotReview(
   taskId: string
 ): Promise<DevPilotReviewResponse> {
   const res = await fetchWithAuth(
-    `${API_BASE}/repositories/${repositoryId}/devpilot/tasks/${taskId}/review`
+    `/api/v1/repositories/${repositoryId}/devpilot/tasks/${taskId}/review`
   );
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -313,7 +311,7 @@ export async function triggerDevPilotValidation(
   testCommand?: string
 ): Promise<DevPilotValidationResponse> {
   const res = await fetchWithAuth(
-    `${API_BASE}/repositories/${repositoryId}/devpilot/tasks/${taskId}/validate`,
+    `/api/v1/repositories/${repositoryId}/devpilot/tasks/${taskId}/validate`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -336,7 +334,7 @@ export async function cancelDevPilotTask(
   reason?: string
 ): Promise<DevPilotTaskDetail> {
   const res = await fetchWithAuth(
-    `${API_BASE}/repositories/${repositoryId}/devpilot/tasks/${taskId}/cancel`,
+    `/api/v1/repositories/${repositoryId}/devpilot/tasks/${taskId}/cancel`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
