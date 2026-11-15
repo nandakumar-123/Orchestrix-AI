@@ -33,7 +33,7 @@ class DependencyScanner:
     def is_pip_audit_available(self) -> bool:
         """Check if pip-audit executable or python module is installed."""
         try:
-            import pip_audit  # noqa: F401
+            import pip_audit  # type: ignore[import-untyped]  # noqa: F401
 
             return True
         except ImportError:

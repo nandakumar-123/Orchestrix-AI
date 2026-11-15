@@ -6,7 +6,7 @@ import tomllib
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 logger = logging.getLogger("orchestrix.dependencies")
 

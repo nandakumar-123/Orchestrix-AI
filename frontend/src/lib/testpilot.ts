@@ -186,7 +186,10 @@ export async function detectFrameworks(
     const err = await getResponseErrorMessage(res, `Failed to detect frameworks (${res.status})`);
     throw new Error(err);
   }
-  return res.json();
+  const raw = await res.json();
+  if (Array.isArray(raw)) return raw;
+  if (raw && typeof raw === "object") return [raw];
+  return [];
 }
 
 export async function generateTestSuite(

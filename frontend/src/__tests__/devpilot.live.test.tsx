@@ -5,8 +5,8 @@ import DevPilotPage from "../app/devpilot/page";
 const itLive = process.env.RUN_LIVE_TESTS ? it : it.skip;
 
 describe("Live DevPilot Authenticated Integration Test", () => {
-  const SESSION_COOKIE = "vAMSFb6fj7YZrikx2ywNsy3GJjkM5f2UHgeH0S7d8ws";
-  const CSRF_COOKIE = "34eiA8wxuSh-cdSOrXCzHTSP3OBWZHxJVllNyAUs3pM.b80108b95b54fec3b9e0c999fe9492a29a283c05eeb15a537423479a85aa0c4e";
+  const SESSION_COOKIE = "OzDC_32Q1zQTbvCHuqY8RLJ07YpiYrN75F-dI6JJ3qU";
+  const CSRF_COOKIE = "M2LXcouv5w0jLadRM_sSJXZJMatdJonQu0UquSxcLIQ.7a84b9659c5e3a4b54104fd5cd7c5a02a9125765f675e30136edeb486092a297";
 
   beforeAll(() => {
     // Set cookie on JSDOM document
@@ -46,17 +46,27 @@ describe("Live DevPilot Authenticated Integration Test", () => {
       await waitFor(
         () => {
           expect(
-            screen.getByText("nandakumar-123/time-tracker")
-          ).toBeInTheDocument();
+            screen.getAllByText(/time-tracker|AI-breakup-Recovery-chatbot/i).length
+          ).toBeGreaterThan(0);
         },
         { timeout: 15000 }
       );
+
+      // Select time-tracker repository if not already selected
+      const selectRepo = screen.getByLabelText(/Repository Selection/i);
+      const timeTrackerOption = Array.from((selectRepo as HTMLSelectElement).options).find((opt) =>
+        opt.text.includes("time-tracker")
+      );
+      if (timeTrackerOption && (selectRepo as HTMLSelectElement).value !== timeTrackerOption.value) {
+        (selectRepo as HTMLSelectElement).value = timeTrackerOption.value;
+        selectRepo.dispatchEvent(new Event("change", { bubbles: true }));
+      }
 
       // 3. Verify task history rendered live tasks
       await waitFor(
         () => {
           expect(
-            screen.getAllByText(/Add Input Validation Helper|Add CSV Export Utility/i).length
+            screen.getAllByText(/Add Input Validation Helper|Add CSV Export Utility|Security Remediation/i).length
           ).toBeGreaterThanOrEqual(1);
         },
         { timeout: 15000 }

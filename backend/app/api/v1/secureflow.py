@@ -31,6 +31,7 @@ from app.api.v1.schemas_agents import (
     SecureFlowStartScanRequest,
     SecureFlowUpdateFindingStatusRequest,
 )
+from app.db.models.devpilot import DevPilotTask
 from app.db.models.membership import WorkspaceMembership
 from app.db.models.repository import Repository
 from app.db.models.secureflow import (
@@ -584,10 +585,13 @@ async def get_remediation_task(
             detail=f"Security finding {finding_id} not found",
         )
 
-    if not finding.devpilot_task:
+    if not finding.devpilot_task_id:
         return None
 
-    task = finding.devpilot_task
+    task = await db.get(DevPilotTask, finding.devpilot_task_id)
+    if not task:
+        return None
+
     return RemediationTaskResponse(
         finding_id=finding.id,
         devpilot_task_id=task.id,
