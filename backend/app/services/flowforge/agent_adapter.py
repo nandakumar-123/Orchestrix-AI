@@ -78,16 +78,21 @@ class FlowForgeAgentAdapter:
         node_id: str,
         config: dict[str, Any],
         context_data: dict[str, Any],
+        execution_id: uuid.UUID | None = None,
+        attempt_number: int = 1,
     ) -> dict[str, Any]:
         """
         Execute an agent task step, returning an output reference dictionary.
         Outputs are structured metadata references (e.g., task_id, scan_id, execution_id)
         rather than massive blobs or raw secrets.
+        Uses execution_id + node_id as the stable idempotency key to avoid cross-task collisions.
         """
         agent_type_upper = agent_type.upper()
 
         if agent_type_upper == "DEVPILOT":
-            return await self._execute_devpilot(db, workspace_id, node_id, config, context_data)
+            return await self._execute_devpilot(
+                db, workspace_id, node_id, config, context_data, execution_id, attempt_number
+            )
         elif agent_type_upper == "IMPACTMIND":
             return await self._execute_impactmind(db, workspace_id, node_id, config, context_data)
         elif agent_type_upper == "TESTPILOT":
@@ -104,6 +109,8 @@ class FlowForgeAgentAdapter:
         node_id: str,
         config: dict[str, Any],
         context_data: dict[str, Any],
+        execution_id: uuid.UUID | None = None,
+        attempt_number: int = 1,
     ) -> dict[str, Any]:
         repository_id_str = config.get("repository_id") or context_data.get("repository_id")
         if not repository_id_str:
@@ -139,29 +146,48 @@ class FlowForgeAgentAdapter:
         user_id_str = context_data.get("user_id")
         user_id = uuid.UUID(str(user_id_str)) if user_id_str else None
 
-        # Idempotency check: if an existing task was already created for this execution and node, reuse it
+        # Build stable idempotency key based on execution context:
+        # 1. Explicitly provided idempotency_key in config or context_data (for workflow retry or re-execution)
+        # 2. Or fallback to workflow_id + node_id if same workflow re-executes with same context
+        # 3. Or execution_id + node_id for within-execution step retry
+        workflow_id_str = context_data.get("workflow_id")
+        idempotency_key = (
+            config.get("idempotency_key")
+            or context_data.get("idempotency_key")
+            or (f"workflow:{workflow_id_str}:{node_id}" if workflow_id_str else None)
+            or (f"execution:{execution_id}:{node_id}" if execution_id else None)
+        )
+
         from app.db.models.devpilot import DevPilotTask
 
-        existing_task_stmt = (
-            select(DevPilotTask)
-            .where(
-                DevPilotTask.workspace_id == workspace_id,
-                DevPilotTask.repository_id == repository_id,
-                DevPilotTask.title == title,
+        if idempotency_key:
+            # Query task matching the exact idempotency key or metadata
+            stmt = (
+                select(DevPilotTask)
+                .where(
+                    DevPilotTask.workspace_id == workspace_id,
+                    DevPilotTask.repository_id == repository_id,
+                    DevPilotTask.prompt.like(f"%[IDEMPOTENCY_KEY:{idempotency_key}]%"),
+                )
+                .order_by(DevPilotTask.created_at.desc())
+                .limit(1)
             )
-            .order_by(DevPilotTask.created_at.desc())
-            .limit(1)
+            existing_task = (await db.execute(stmt)).scalar_one_or_none()
+            if existing_task:
+                return {
+                    "status": "COMPLETED",
+                    "task_id": str(existing_task.id),
+                    "task_title": existing_task.title,
+                    "task_status": existing_task.status,
+                    "repository_id": str(repository_id),
+                    "idempotency_key": idempotency_key,
+                    "reused": True,
+                }
+
+        # Embed idempotency signature into task prompt to ensure tamper-proof and stable retrieval
+        full_prompt = (
+            f"{prompt}\n\n[IDEMPOTENCY_KEY:{idempotency_key}]" if idempotency_key else prompt
         )
-        existing_task = (await db.execute(existing_task_stmt)).scalar_one_or_none()
-        if existing_task:
-            return {
-                "status": "COMPLETED",
-                "task_id": str(existing_task.id),
-                "task_title": existing_task.title,
-                "task_status": existing_task.status,
-                "repository_id": str(repository_id),
-                "reused": True,
-            }
 
         task = await orchestrator.create_task(
             db=db,
@@ -169,7 +195,7 @@ class FlowForgeAgentAdapter:
             repository_id=repository_id,
             user_id=user_id,
             title=title,
-            prompt=prompt,
+            prompt=full_prompt,
             task_type=task_type,
             base_commit_sha=config.get("base_commit_sha") or context_data.get("base_commit_sha"),
         )
@@ -180,6 +206,8 @@ class FlowForgeAgentAdapter:
             "task_title": task.title,
             "task_status": task.status,
             "repository_id": str(repository_id),
+            "idempotency_key": idempotency_key,
+            "reused": False,
         }
 
     async def _execute_impactmind(

@@ -97,13 +97,16 @@ class FlowForgeExecutionEngine:
                 f"No valid workflow version found for workflow {workflow_id}."
             )
 
+        ctx = dict(context_data or {})
+        ctx["workflow_id"] = str(workflow_id)
+
         execution = WorkflowExecution(
             workflow_id=workflow_id,
             workflow_version_id=version.id,
             workspace_id=workspace_id,
             trigger_id=trigger_id,
             status=WorkflowExecutionStatus.RUNNING,
-            context_data=context_data or {},
+            context_data=ctx,
             started_at=utc_now(),
             created_at=utc_now(),
         )
@@ -274,6 +277,15 @@ class FlowForgeExecutionEngine:
         await db.flush()
         return execution
 
+    SAFE_TO_RETRY_NODE_TYPES = {
+        WorkflowNodeType.TRIGGER,
+        WorkflowNodeType.NOTIFICATION,
+        WorkflowNodeType.CONDITION,
+        WorkflowNodeType.PARALLEL,
+        WorkflowNodeType.MERGE,
+        WorkflowNodeType.END,
+    }
+
     async def recover_interrupted_executions(
         self,
         db: AsyncSession,
@@ -282,9 +294,10 @@ class FlowForgeExecutionEngine:
         """
         Scan for executions left in RUNNING status (e.g. from a backend process crash/restart).
         Safely reconciles interrupted step executions and resumes eligible workflows.
-        - Identifies incomplete node executions (RUNNING -> FAILED or resume).
+        - Classifies operations as safe-to-retry or unsafe-to-retry.
+        - Safe operations (triggers, notifications, routing) are queued for resume/retry.
+        - Unsafe operations (external agent mutations without reconciliation) are marked FAILED.
         - Completed steps remain preserved and are not re-executed.
-        - Unsafe side effects are not blindly restarted.
         - Preserves pending approval state.
         - Emits EXECUTION_STARTED/RECOVERED audit events.
         """
@@ -307,25 +320,56 @@ class FlowForgeExecutionEngine:
         for execution in interrupted:
             logger.info(f"Recovering interrupted workflow execution {execution.id}")
 
+            definition_json = (
+                execution.version.workflow_definition_json
+                if execution.version
+                else {}
+            )
+            node_map = {n["id"]: n for n in definition_json.get("nodes", [])}
+
             # Reconcile any in-flight steps that were marked RUNNING during crash
             for step in execution.steps:
                 if step.status == WorkflowStepStatus.RUNNING:
-                    # Mark interrupted attempt
-                    step.status = WorkflowStepStatus.FAILED
-                    step.completed_at = utc_now()
-                    step.error_summary = "Step interrupted by process restart"
-                    db.add(
-                        WorkflowEvent(
-                            execution_id=execution.id,
-                            workspace_id=execution.workspace_id,
-                            event_type=WorkflowEventType.STEP_FAILED,
-                            payload_json={
-                                "node_id": step.node_id,
-                                "reason": "Interrupted by backend crash/restart",
-                            },
-                            created_at=utc_now(),
+                    node_data = node_map.get(step.node_id, {})
+                    node_type = node_data.get("node_type", step.agent_type)
+
+                    # Classify safe-to-retry vs unsafe-to-retry
+                    if node_type in self.SAFE_TO_RETRY_NODE_TYPES:
+                        # Safe side-effect-free operation: reset to PENDING so it can be re-evaluated
+                        step.status = WorkflowStepStatus.PENDING
+                        step.error_summary = "Interrupted by backend crash; queued for safe recovery retry"
+                        db.add(
+                            WorkflowEvent(
+                                execution_id=execution.id,
+                                workspace_id=execution.workspace_id,
+                                event_type=WorkflowEventType.STEP_FAILED,
+                                payload_json={
+                                    "node_id": step.node_id,
+                                    "action": "queued_for_retry",
+                                    "reason": "Safe node interrupted by restart",
+                                },
+                                created_at=utc_now(),
+                            )
                         )
-                    )
+                    else:
+                        # Unsafe external side effect (e.g. code generation, active remediation):
+                        # Mark FAILED to avoid uncontrolled blind re-execution
+                        step.status = WorkflowStepStatus.FAILED
+                        step.completed_at = utc_now()
+                        step.error_summary = f"Interrupted unsafe step '{step.node_id}' ({node_type}) halted for safety"
+                        db.add(
+                            WorkflowEvent(
+                                execution_id=execution.id,
+                                workspace_id=execution.workspace_id,
+                                event_type=WorkflowEventType.STEP_FAILED,
+                                payload_json={
+                                    "node_id": step.node_id,
+                                    "action": "marked_failed",
+                                    "reason": "Unsafe side-effecting agent step halted during crash recovery",
+                                },
+                                created_at=utc_now(),
+                            )
+                        )
 
             db.add(
                 WorkflowEvent(
@@ -408,8 +452,9 @@ class FlowForgeExecutionEngine:
             ready_node_ids: list[str] = []
 
             for n_id, n_data in node_map.items():
-                if n_id in steps_by_node:
-                    continue  # already evaluated or running
+                step = steps_by_node.get(n_id)
+                if step and step.status != WorkflowStepStatus.PENDING:
+                    continue  # already evaluated, running, or terminal
 
                 incomings = incoming_conns.get(n_id, [])
                 if not incomings:
@@ -668,7 +713,7 @@ class FlowForgeExecutionEngine:
                             WorkflowNodeType.TESTPILOT,
                             WorkflowNodeType.SECUREFLOW,
                         }:
-                            # Delegate to agent adapter
+                            # Delegate to agent adapter with execution_id and attempt_number for stable idempotency
                             output_ref = await self.agent_adapter.execute_agent_step(
                                 db=db,
                                 agent_type=node_type,
@@ -676,6 +721,8 @@ class FlowForgeExecutionEngine:
                                 node_id=node_id,
                                 config=node_config,
                                 context_data=context,
+                                execution_id=execution.id,
+                                attempt_number=current_attempt,
                             )
                             step.status = WorkflowStepStatus.COMPLETED
                             step.completed_at = utc_now()

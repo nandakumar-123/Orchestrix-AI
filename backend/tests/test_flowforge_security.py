@@ -665,3 +665,96 @@ async def test_parallel_branch_cancellation_and_failure(test_session: AsyncSessi
     assert cancelled.status == WorkflowExecutionStatus.CANCELLED
     appr = cancelled.approvals[0]
     assert appr.status == WorkflowApprovalStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_idempotent_task_creation_and_title_independence(test_session: AsyncSession) -> None:
+    """
+    Assert FlowForge node execution relies on deterministic idempotency signatures
+    rather than loose title matching, preventing cross-task collisions.
+    """
+    from app.services.flowforge.agent_adapter import FlowForgeAgentAdapter
+
+    ws = Workspace(name="WS-Idempotency", slug="ws-idempotency")
+    test_session.add(ws)
+    await test_session.flush()
+
+    inst = GitHubInstallation(
+        workspace_id=ws.id,
+        installation_id=98765,
+        account_login="flowforge-org",
+        account_type="Organization",
+        account_id=123456,
+    )
+    test_session.add(inst)
+    await test_session.flush()
+
+    repo = Repository(
+        workspace_id=ws.id,
+        installation_id=inst.id,
+        name="repo-test",
+        full_name="flowforge-org/repo-test",
+        owner_login="flowforge-org",
+        html_url="https://github.com/flowforge-org/repo-test",
+        default_branch="main",
+        github_repository_id=12345,
+    )
+    test_session.add(repo)
+    await test_session.flush()
+
+    adapter = FlowForgeAgentAdapter()
+
+    # Two distinct workflow executions with the exact same human title but different execution IDs
+    exec1_id = uuid.uuid4()
+    exec2_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+
+    # 1. First execution creates task
+    res1 = await adapter.execute_agent_step(
+        db=test_session,
+        agent_type="DEVPILOT",
+        workspace_id=ws.id,
+        node_id="devpilot_step_1",
+        config={
+            "repository_id": str(repo.id),
+            "task_title": "Refactor Authentication Service",
+            "prompt": "Update auth token parsing logic.",
+        },
+        context_data={"workflow_id": str(workflow_id)},
+        execution_id=exec1_id,
+    )
+    task1_id = res1["task_id"]
+
+    # 2. Re-execution of the SAME node within the same workflow reuses task via idempotency key
+    res1_reexec = await adapter.execute_agent_step(
+        db=test_session,
+        agent_type="DEVPILOT",
+        workspace_id=ws.id,
+        node_id="devpilot_step_1",
+        config={
+            "repository_id": str(repo.id),
+            "task_title": "Refactor Authentication Service",
+            "prompt": "Update auth token parsing logic.",
+        },
+        context_data={"workflow_id": str(workflow_id)},
+        execution_id=exec1_id,
+    )
+    assert res1_reexec["task_id"] == task1_id
+
+    # 3. Unrelated second workflow node with the same title gets its own independent task
+    unrelated_workflow_id = uuid.uuid4()
+    res2 = await adapter.execute_agent_step(
+        db=test_session,
+        agent_type="DEVPILOT",
+        workspace_id=ws.id,
+        node_id="devpilot_step_1",
+        config={
+            "repository_id": str(repo.id),
+            "task_title": "Refactor Authentication Service",
+            "prompt": "Update auth token parsing logic.",
+        },
+        context_data={"workflow_id": str(unrelated_workflow_id)},
+        execution_id=exec2_id,
+    )
+    task2_id = res2["task_id"]
+    assert task1_id != task2_id

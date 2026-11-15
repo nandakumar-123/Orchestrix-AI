@@ -227,6 +227,25 @@ class RepositoryContextBuilder:
             for t in existing_tests[:8]:
                 markdown_sections.append(f"- `{t}`")
 
+        # 8. DevMemory persistent engineering memory integration
+        try:
+            from app.db.models.devmemory import MemoryConsumerAgent
+            from app.services.devmemory.agent_interface import AgentMemoryInterface
+
+            memory_iface = AgentMemoryInterface()
+            mem_context = await memory_iface.build_agent_context(
+                db=db,
+                workspace_id=workspace_id,
+                query=clean_prompt,
+                repository_id=repository_id,
+                agent=MemoryConsumerAgent.DEVPILOT,
+                max_tokens=1000,
+            )
+            if mem_context and "No prior engineering memories found" not in mem_context:
+                markdown_sections.append(f"\n{mem_context}")
+        except Exception as e:
+            logger.warning(f"DevMemory context assembly skipped safely: {e}")
+
         context_md = "\n".join(markdown_sections)[: self.max_context_chars]
 
         return DevPilotContext(
