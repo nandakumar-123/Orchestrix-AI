@@ -12,6 +12,8 @@ from app.db.models.devmemory import (
     MemoryType,
     MemoryVerificationStatus,
 )
+from app.db.models.github_installation import GitHubInstallation
+from app.db.models.repository import Repository
 from app.db.models.user import User
 from app.db.models.workspace import Workspace
 from app.services.devmemory.memory_service import (
@@ -264,3 +266,132 @@ async def test_relationship_supersession_marks_target_outdated(test_session: Asy
     # Target memory must now be OUTDATED
     refreshed_old = await service.get_memory(test_session, ws.id, old_mem.id)
     assert refreshed_old.verification_status == MemoryVerificationStatus.OUTDATED.value
+
+
+@pytest.mark.asyncio
+async def test_repository_aware_deduplication_isolation(test_session: AsyncSession) -> None:
+    """
+    Test repository-aware deduplication:
+    1. Identical content in Repository A and Repository B creates two distinct repository-scoped memories.
+    2. Re-submitting identical content in Repository A returns existing Repository A memory.
+    3. Workspace-wide memories (repository_id=None) deduplicate across the workspace.
+    4. Identical content in different workspaces creates distinct memories.
+    """
+    service = DevMemoryService()
+    ws1 = Workspace(name="WS-Repo-Dedup-1", slug="ws-repo-dedup-1")
+    ws2 = Workspace(name="WS-Repo-Dedup-2", slug="ws-repo-dedup-2")
+    test_session.add_all([ws1, ws2])
+    await test_session.flush()
+
+    inst1 = GitHubInstallation(
+        workspace_id=ws1.id,
+        installation_id=101,
+        account_login="org",
+        account_type="Organization",
+        account_id=9001,
+    )
+    inst2 = GitHubInstallation(
+        workspace_id=ws2.id,
+        installation_id=102,
+        account_login="org",
+        account_type="Organization",
+        account_id=9001,
+    )
+    test_session.add_all([inst1, inst2])
+    await test_session.flush()
+
+    repo_a = Repository(
+        workspace_id=ws1.id,
+        installation_id=inst1.id,
+        github_repository_id=1001,
+        name="service-alpha",
+        full_name="org/service-alpha",
+        owner_login="org",
+        default_branch="main",
+        html_url="https://github.com/org/service-alpha",
+    )
+    repo_b = Repository(
+        workspace_id=ws1.id,
+        installation_id=inst1.id,
+        github_repository_id=1002,
+        name="service-beta",
+        full_name="org/service-beta",
+        owner_login="org",
+        default_branch="main",
+        html_url="https://github.com/org/service-beta",
+    )
+    repo_c = Repository(
+        workspace_id=ws2.id,
+        installation_id=inst2.id,
+        github_repository_id=2001,
+        name="service-alpha",
+        full_name="org/service-alpha",
+        owner_login="org",
+        default_branch="main",
+        html_url="https://github.com/org/service-alpha",
+    )
+    test_session.add_all([repo_a, repo_b, repo_c])
+    await test_session.flush()
+
+    common_content = "Always validate JWT signatures with asymmetric public key rotation."
+
+    # 1. Create memory in Repo A
+    req_a = MemoryCreateRequest(
+        memory_type=MemoryType.SECURITY_KNOWLEDGE,
+        title="JWT Validation Rule",
+        content=common_content,
+        repository_id=repo_a.id,
+    )
+    mem_a1 = await service.create_memory(test_session, ws1.id, req_a)
+    await test_session.commit()
+
+    # 2. Re-submitting in Repo A returns existing Repo A memory
+    mem_a2 = await service.create_memory(test_session, ws1.id, req_a)
+    await test_session.commit()
+    assert mem_a1.id == mem_a2.id
+    assert mem_a1.repository_id == repo_a.id
+
+    # 3. Create identical content in Repo B -> Must be distinct memory with distinct content hash
+    req_b = MemoryCreateRequest(
+        memory_type=MemoryType.SECURITY_KNOWLEDGE,
+        title="JWT Validation Rule",
+        content=common_content,
+        repository_id=repo_b.id,
+    )
+    mem_b = await service.create_memory(test_session, ws1.id, req_b)
+    await test_session.commit()
+    assert mem_b.id != mem_a1.id
+    assert mem_b.repository_id == repo_b.id
+    assert mem_b.content_hash != mem_a1.content_hash
+
+    # 4. Workspace-wide memory with same content in WS1
+    req_ws = MemoryCreateRequest(
+        memory_type=MemoryType.SECURITY_KNOWLEDGE,
+        title="JWT Validation Rule",
+        content=common_content,
+        repository_id=None,
+    )
+    mem_ws1 = await service.create_memory(test_session, ws1.id, req_ws)
+    await test_session.commit()
+    assert mem_ws1.id != mem_a1.id
+    assert mem_ws1.id != mem_b.id
+    assert mem_ws1.repository_id is None
+    assert mem_ws1.content_hash != mem_a1.content_hash
+
+    # Submitting identical workspace-wide memory in WS1 returns mem_ws1
+    mem_ws1_dup = await service.create_memory(test_session, ws1.id, req_ws)
+    await test_session.commit()
+    assert mem_ws1_dup.id == mem_ws1.id
+
+    # 5. Create identical content in Repo C in WS2 -> Isolated to WS2
+    req_c = MemoryCreateRequest(
+        memory_type=MemoryType.SECURITY_KNOWLEDGE,
+        title="JWT Validation Rule",
+        content=common_content,
+        repository_id=repo_c.id,
+    )
+    mem_c = await service.create_memory(test_session, ws2.id, req_c)
+    await test_session.commit()
+    assert mem_c.id != mem_a1.id
+    assert mem_c.workspace_id == ws2.id
+    assert mem_c.content_hash != mem_a1.content_hash

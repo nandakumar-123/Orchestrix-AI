@@ -321,9 +321,7 @@ class FlowForgeExecutionEngine:
             logger.info(f"Recovering interrupted workflow execution {execution.id}")
 
             definition_json = (
-                execution.version.workflow_definition_json
-                if execution.version
-                else {}
+                execution.version.workflow_definition_json if execution.version else {}
             )
             node_map = {n["id"]: n for n in definition_json.get("nodes", [])}
 
@@ -337,7 +335,9 @@ class FlowForgeExecutionEngine:
                     if node_type in self.SAFE_TO_RETRY_NODE_TYPES:
                         # Safe side-effect-free operation: reset to PENDING so it can be re-evaluated
                         step.status = WorkflowStepStatus.PENDING
-                        step.error_summary = "Interrupted by backend crash; queued for safe recovery retry"
+                        step.error_summary = (
+                            "Interrupted by backend crash; queued for safe recovery retry"
+                        )
                         db.add(
                             WorkflowEvent(
                                 execution_id=execution.id,
@@ -593,15 +593,22 @@ class FlowForgeExecutionEngine:
                 # Check if an existing step execution exists (e.g. from crash recovery or prior attempt)
                 step = steps_by_node.get(node_id)
                 current_attempt = 1
+                dispatch_key = f"{execution.id}:{node_id}:attempt_{current_attempt}"
                 if step:
                     if step.status == WorkflowStepStatus.COMPLETED:
                         continue  # Already completed; do not rerun
                     current_attempt = step.attempt_number + 1
+                    dispatch_key = f"{execution.id}:{node_id}:attempt_{current_attempt}"
                     step.attempt_number = current_attempt
                     step.status = WorkflowStepStatus.RUNNING
                     step.started_at = utc_now()
                     step.error_summary = None
+                    step_input = dict(step.input_reference or {})
+                    step_input["dispatch_key"] = dispatch_key
+                    step.input_reference = step_input
                 else:
+                    step_input = dict(node_config)
+                    step_input["dispatch_key"] = dispatch_key
                     step = WorkflowStepExecution(
                         execution_id=execution.id,
                         workspace_id=execution.workspace_id,
@@ -609,7 +616,7 @@ class FlowForgeExecutionEngine:
                         node_name=node_data.get("name"),
                         agent_type=node_type,
                         status=WorkflowStepStatus.RUNNING,
-                        input_reference=node_config,
+                        input_reference=step_input,
                         attempt_number=current_attempt,
                         started_at=utc_now(),
                         created_at=utc_now(),
@@ -629,6 +636,7 @@ class FlowForgeExecutionEngine:
                             "node_id": node_id,
                             "node_type": node_type,
                             "attempt_number": current_attempt,
+                            "dispatch_key": dispatch_key,
                         },
                         created_at=utc_now(),
                     )
@@ -713,17 +721,38 @@ class FlowForgeExecutionEngine:
                             WorkflowNodeType.TESTPILOT,
                             WorkflowNodeType.SECUREFLOW,
                         }:
-                            # Delegate to agent adapter with execution_id and attempt_number for stable idempotency
-                            output_ref = await self.agent_adapter.execute_agent_step(
-                                db=db,
-                                agent_type=node_type,
-                                workspace_id=execution.workspace_id,
-                                node_id=node_id,
-                                config=node_config,
-                                context_data=context,
-                                execution_id=execution.id,
-                                attempt_number=current_attempt,
+                            # Safe dispatch idempotency reconciliation:
+                            # 1. Emit explicit STEP_DISPATCHED audit event with persistent dispatch identity
+                            db.add(
+                                WorkflowEvent(
+                                    execution_id=execution.id,
+                                    workspace_id=execution.workspace_id,
+                                    event_type=WorkflowEventType.STEP_DISPATCHED,
+                                    payload_json={
+                                        "node_id": node_id,
+                                        "agent_type": node_type,
+                                        "attempt_number": current_attempt,
+                                        "dispatch_key": dispatch_key,
+                                    },
+                                    created_at=utc_now(),
+                                )
                             )
+                            await db.flush()
+
+                            # 2. Reconcile existing agent tasks or completed step outputs before dispatch
+                            if step.output_reference and step.output_reference.get("task_id"):
+                                output_ref = step.output_reference
+                            else:
+                                output_ref = await self.agent_adapter.execute_agent_step(
+                                    db=db,
+                                    agent_type=node_type,
+                                    workspace_id=execution.workspace_id,
+                                    node_id=node_id,
+                                    config=node_config,
+                                    context_data=context,
+                                    execution_id=execution.id,
+                                    attempt_number=current_attempt,
+                                )
                             step.status = WorkflowStepStatus.COMPLETED
                             step.completed_at = utc_now()
                             step.output_reference = output_ref
@@ -752,7 +781,9 @@ class FlowForgeExecutionEngine:
                         success = True
 
                     except Exception as step_exc:
-                        logger.exception(f"Step '{node_id}' failed on attempt {current_attempt}: {step_exc}")
+                        logger.exception(
+                            f"Step '{node_id}' failed on attempt {current_attempt}: {step_exc}"
+                        )
                         step.error_summary = str(step_exc)
 
                         db.add(

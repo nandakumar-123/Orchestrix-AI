@@ -166,7 +166,6 @@ class DevMemoryGraphService:
         Retrieve localized memory neighborhood subgraph enforcing workspace filtering.
         """
         provider = self._get_provider()
-        node_id = f"memory:{memory_id}"
         try:
             subgraph = await provider.get_subgraph(
                 snapshot_id=workspace_id,
@@ -189,9 +188,7 @@ class DevMemoryGraphService:
 
             return {
                 "nodes": [n.to_dict() if hasattr(n, "to_dict") else n for n in valid_nodes],
-                "relationships": [
-                    r.to_dict() if hasattr(r, "to_dict") else r for r in valid_rels
-                ],
+                "relationships": [r.to_dict() if hasattr(r, "to_dict") else r for r in valid_rels],
             }
         except Exception as e:
             logger.warning(f"Graph traversal failed for memory {memory_id}: {e}")

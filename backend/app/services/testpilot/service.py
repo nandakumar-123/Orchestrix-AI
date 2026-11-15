@@ -77,10 +77,30 @@ class TestPilotService:
         Generate and persist a proposed test suite in GENERATED status.
         Mandatory approval boundary: Never writes to repository or executes without approval.
         """
+        # Incorporate DevMemory test conventions and known limitations safely
+        augmented_context = source_context
+        try:
+            from app.db.models.devmemory import MemoryConsumerAgent
+            from app.services.devmemory.agent_interface import AgentMemoryInterface
+
+            memory_iface = AgentMemoryInterface()
+            mem_context = await memory_iface.build_agent_context(
+                db=db,
+                workspace_id=workspace_id,
+                query=f"Test conventions and guidelines for {framework} {test_type}",
+                repository_id=repository_id,
+                agent=MemoryConsumerAgent.TESTPILOT,
+                max_tokens=600,
+            )
+            if mem_context and "No prior engineering memories found" not in mem_context:
+                augmented_context = f"{source_context}\n\n{mem_context}"
+        except Exception as mem_err:
+            logger.warning(f"TestPilot DevMemory context retrieval skipped safely: {mem_err}")
+
         suite_dto = await self.generator.generate_suite(
             framework=framework,
             target_files=target_files,
-            source_context=source_context,
+            source_context=augmented_context,
             test_type=test_type,
             symbols_info=symbols_info,
         )

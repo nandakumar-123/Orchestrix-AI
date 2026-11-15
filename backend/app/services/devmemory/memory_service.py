@@ -64,10 +64,21 @@ class TenantBoundaryViolationError(MemoryServiceError):
     pass
 
 
-def compute_content_hash(workspace_id: uuid.UUID, memory_type: str, content: str) -> str:
-    """Deterministic normalized content hash scoped to workspace and memory type."""
+def compute_content_hash(
+    workspace_id: uuid.UUID,
+    memory_type: str,
+    content: str,
+    repository_id: uuid.UUID | None = None,
+) -> str:
+    """
+    Deterministic normalized content hash scoped to workspace, memory type, and optional repository.
+    - Workspace-wide memories (repository_id is None) share an explicit ':workspace:' namespace.
+    - Repository-specific memories include the repository UUID to prevent identical content in
+      two different repositories from colliding or leaking knowledge across repositories.
+    """
     normalized = " ".join(content.strip().split())
-    raw = f"{workspace_id}:{memory_type}:{normalized}"
+    repo_scope = str(repository_id) if repository_id else "workspace"
+    raw = f"{workspace_id}:{repo_scope}:{memory_type}:{normalized}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -114,10 +125,15 @@ class DevMemoryService:
             redact_secrets(request.source_reference.strip()) if request.source_reference else None
         )
 
-        # 3. Content normalization and hash deduplication
-        c_hash = compute_content_hash(workspace_id, request.memory_type.value, clean_content)
+        # 3. Content normalization and hash deduplication (repository-aware)
+        c_hash = compute_content_hash(
+            workspace_id,
+            request.memory_type.value,
+            clean_content,
+            repository_id=request.repository_id,
+        )
 
-        # 4. Check for existing exact duplicate in same workspace
+        # 4. Check for existing exact duplicate in same workspace and repository scope
         stmt_dup = (
             select(EngineeringMemory)
             .where(
@@ -126,6 +142,11 @@ class DevMemoryService:
             )
             .options(selectinload(EngineeringMemory.evidence))
         )
+        if request.repository_id:
+            stmt_dup = stmt_dup.where(EngineeringMemory.repository_id == request.repository_id)
+        else:
+            stmt_dup = stmt_dup.where(EngineeringMemory.repository_id.is_(None))
+
         dup = (await db.execute(stmt_dup)).scalar_one_or_none()
         if dup:
             logger.info(

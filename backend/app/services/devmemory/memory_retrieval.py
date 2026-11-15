@@ -167,12 +167,11 @@ class DevMemoryRetrievalService:
 
             # Recency multiplier (slight decay for very old memories: half-life ~ 90 days)
             mem_updated = mem.updated_at
+            now_cmp = now
             if mem_updated.tzinfo is None and now.tzinfo is not None:
                 mem_updated = mem_updated.replace(tzinfo=UTC)
             elif mem_updated.tzinfo is not None and now.tzinfo is None:
                 now_cmp = now.replace(tzinfo=UTC)
-            else:
-                now_cmp = now
             age_days = max(0.0, (now_cmp - mem_updated).total_seconds() / 86400.0)
             recency_multiplier = 1.0 / (1.0 + (age_days / 365.0))
 

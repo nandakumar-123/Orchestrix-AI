@@ -283,6 +283,34 @@ class ImpactMindEngine:
                 )
             )
 
+        # 11. DevMemory integration: safely record notable discoveries (unverified by default)
+        if breaking_count > 0:
+            try:
+                from app.db.models.devmemory import EvidenceType, MemoryConsumerAgent, MemoryType
+                from app.services.devmemory.agent_interface import AgentMemoryInterface
+
+                memory_iface = AgentMemoryInterface()
+                breaking_files = [c.file_path for c in classifications if c.is_breaking]
+                await memory_iface.record_solution(
+                    db=db,
+                    workspace_id=workspace_id,
+                    repository_id=repository_id,
+                    title=f"ImpactMind Breaking Change Analysis: {len(breaking_files)} affected files",
+                    solution_content=(
+                        f"Detected {breaking_count} breaking changes across: {', '.join(breaking_files[:5])}.\n"
+                        f"Structural Exposure Tier: {score_res.tier}. Recommendations: {'; '.join(score_res.recommended_actions[:3])}"
+                    ),
+                    memory_type=MemoryType.KNOWN_LIMITATION,
+                    agent=MemoryConsumerAgent.IMPACTMIND,
+                    evidence_type=EvidenceType.CODE_DIFF,
+                    evidence_content=f"Diff total additions: {parsed_diff.total_additions}, deletions: {parsed_diff.total_deletions}",
+                    source_reference=f"ImpactMindAssessment:{assessment.id}",
+                )
+            except Exception as mem_err:
+                logger.warning(
+                    f"ImpactMind DevMemory discovery recording skipped safely: {mem_err}"
+                )
+
         await db.commit()
         await db.refresh(assessment)
         return assessment

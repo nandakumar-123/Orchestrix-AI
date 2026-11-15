@@ -66,6 +66,26 @@ class DevPilotRemediationBridge:
         clean_desc = redact_secrets(finding.description)
         clean_rec = redact_secrets(finding.remediation_recommendation or "")
 
+        # Query DevMemory security knowledge and policies safely
+        sec_context_section = ""
+        try:
+            from app.db.models.devmemory import MemoryConsumerAgent
+            from app.services.devmemory.agent_interface import AgentMemoryInterface
+
+            memory_iface = AgentMemoryInterface()
+            mem_context = await memory_iface.build_agent_context(
+                db=db,
+                workspace_id=finding.workspace_id,
+                query=f"Security remediation guidelines and policies for {finding.category} {finding.rule_id}",
+                repository_id=finding.repository_id,
+                agent=MemoryConsumerAgent.SECUREFLOW,
+                max_tokens=600,
+            )
+            if mem_context and "No prior engineering memories found" not in mem_context:
+                sec_context_section = f"\nRelevant Security Memory & Policies:\n{mem_context}\n"
+        except Exception as mem_err:
+            logger.warning(f"SecureFlow DevMemory context retrieval skipped safely: {mem_err}")
+
         remediation_prompt = (
             f"Remediate {finding.severity} security vulnerability ({finding.rule_id}): {clean_title}\n\n"
             f"Category: {finding.category}\n"
@@ -73,6 +93,7 @@ class DevPilotRemediationBridge:
             f"Lines: {finding.line_start or 0} - {finding.line_end or 0}\n\n"
             f"Description:\n{clean_desc}\n\n"
             f"Recommended Remediation:\n{clean_rec}\n\n"
+            f"{sec_context_section}"
             "Requirements:\n"
             "1. Fix the vulnerability following security best practices.\n"
             "2. Ensure backwards compatibility and prevent regressions.\n"

@@ -146,22 +146,63 @@ class FlowForgeAgentAdapter:
         user_id_str = context_data.get("user_id")
         user_id = uuid.UUID(str(user_id_str)) if user_id_str else None
 
-        # Build stable idempotency key based on execution context:
-        # 1. Explicitly provided idempotency_key in config or context_data (for workflow retry or re-execution)
-        # 2. Or fallback to workflow_id + node_id if same workflow re-executes with same context
-        # 3. Or execution_id + node_id for within-execution step retry
+        # Build durable dispatch identity:
+        # 1. Configured explicit idempotency key in config or context
+        # 2. Or workflow-level dispatch key if workflow_id is present (guarantees safe idempotent re-execution)
+        # 3. Or execution-level dispatch key (execution_id:node_id:attempt_number)
         workflow_id_str = context_data.get("workflow_id")
         idempotency_key = (
             config.get("idempotency_key")
             or context_data.get("idempotency_key")
             or (f"workflow:{workflow_id_str}:{node_id}" if workflow_id_str else None)
-            or (f"execution:{execution_id}:{node_id}" if execution_id else None)
+            or (
+                f"execution:{execution_id}:{node_id}:attempt_{attempt_number}"
+                if execution_id
+                else None
+            )
         )
 
         from app.db.models.devpilot import DevPilotTask
+        from app.db.models.flowforge import WorkflowStepExecution
 
+        # 1. First check if a step execution already recorded a task_id for this exact execution and node
+        if execution_id:
+            stmt_step = (
+                select(WorkflowStepExecution)
+                .where(
+                    WorkflowStepExecution.execution_id == execution_id,
+                    WorkflowStepExecution.node_id == node_id,
+                    WorkflowStepExecution.workspace_id == workspace_id,
+                )
+                .order_by(WorkflowStepExecution.attempt_number.desc())
+                .limit(1)
+            )
+            prior_step = (await db.execute(stmt_step)).scalar_one_or_none()
+            if (
+                prior_step
+                and prior_step.output_reference
+                and prior_step.output_reference.get("task_id")
+            ):
+                task_id_val = prior_step.output_reference.get("task_id")
+                try:
+                    task_uuid = uuid.UUID(str(task_id_val))
+                    existing_task = await db.get(DevPilotTask, task_uuid)
+                    if existing_task and existing_task.workspace_id == workspace_id:
+                        return {
+                            "status": "COMPLETED",
+                            "task_id": str(existing_task.id),
+                            "task_title": existing_task.title,
+                            "task_status": existing_task.status,
+                            "repository_id": str(repository_id),
+                            "idempotency_key": idempotency_key,
+                            "reused": True,
+                        }
+                except (ValueError, TypeError):
+                    pass
+
+        # 2. Reconcile existing task by exact idempotency signature in prompt or metadata
+        # (NEVER match purely by title, to prevent collisions with unrelated tasks sharing titles)
         if idempotency_key:
-            # Query task matching the exact idempotency key or metadata
             stmt = (
                 select(DevPilotTask)
                 .where(

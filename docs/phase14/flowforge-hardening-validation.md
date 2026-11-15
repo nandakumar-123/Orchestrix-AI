@@ -34,7 +34,11 @@ All requirements have been met and verified with 100% test pass rates across the
   - `timeout_seconds`: Integer between 1 and 86400.
 - **Accurate Attempt Tracking**: Each retry increments `attempt_number` on `WorkflowStepExecution` and emits a structured `WorkflowEventType.STEP_FAILED` event.
 - **Completed Step Preservation**: Completed steps are preserved and never re-executed upon retry.
-- **Agent Task Idempotency**: `FlowForgeAgentAdapter` reuses existing tasks for the same workspace/repository and node title context, preventing duplicate agent work.
+- **Agent Task Idempotency & Dispatch Reconciliation**:
+  - `FlowForgeAgentAdapter` uses database-backed dispatch identity (`(execution_id, node_id, attempt_number)` / `(workflow_id, node_id)`) persisted before calling agent engines.
+  - Emits `STEP_DISPATCHED` audit event prior to agent invocation.
+  - Reconciles existing agent tasks before re-dispatch and never reuses unrelated DevPilot tasks due to matching titles alone.
+  - Distinguishes safe-to-retry operations from operations with external side effects.
 
 ### 2.3 Crash Recovery
 - **Interrupted Execution Scanner**: `recover_interrupted_executions(db, workspace_id)` identifies executions left in `WorkflowExecutionStatus.RUNNING`.
