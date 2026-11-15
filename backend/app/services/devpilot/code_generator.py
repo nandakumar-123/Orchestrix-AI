@@ -83,7 +83,9 @@ class CodeGenerationEngine:
         await db.commit()
 
         # Initialize isolated workspace
-        ws_path = self.workspace_manager.create_task_workspace(task.id, seed_files=base_files)
+        ws_path = self.workspace_manager.create_task_workspace(
+            task_id=task.id, repository_id=task.repository_id, seed_files=base_files
+        )
         task.isolated_workspace_path = ws_path
 
         # Construct generation prompt
@@ -186,7 +188,12 @@ class CodeGenerationEngine:
             if c_type == "DELETE":
                 pass  # Omit from generated_files_dict to represent deletion
             else:
-                self.workspace_manager.write_isolated_file(task.id, f_path, content)
+                self.workspace_manager.write_isolated_file(
+                    task_id=task.id,
+                    relative_path=f_path,
+                    content=content,
+                    repository_id=task.repository_id,
+                )
                 generated_files_dict[f_path] = content
 
         # Produce unified diff comparing base_files and generated_files_dict

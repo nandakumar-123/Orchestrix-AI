@@ -425,12 +425,18 @@ async def update_finding_status(
             detail=f"Security finding {finding_id} not found",
         )
 
-    updated = await service.finding_manager.update_finding_status(
-        db=db,
-        finding_id=finding_id,
-        new_status=payload.status.value,
-        note=payload.note,
-    )
+    try:
+        updated = await service.finding_manager.update_finding_status(
+            db=db,
+            finding_id=finding_id,
+            new_status=payload.status.value,
+            note=payload.note,
+        )
+    except ValueError as ve:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(ve),
+        ) from ve
     if not updated:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -404,7 +404,7 @@ class DevPilotOrchestrator:
             raise ValueError("Task not found")
 
         task.status = "CANCELLED"
-        self.workspace_manager.cleanup_workspace(task_id)
+        self.workspace_manager.cleanup_workspace(task_id=task_id, repository_id=task.repository_id)
 
         db.add(
             DevPilotEvent(

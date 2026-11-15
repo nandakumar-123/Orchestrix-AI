@@ -90,18 +90,30 @@ class TestPilotRunner:
 
         # 3. Create isolated workspace and stage approved test cases
         exec_task_id = uuid.uuid4()
-        workspace_dir = self.workspace_manager.create_task_workspace(exec_task_id)
+        workspace_dir = self.workspace_manager.create_task_workspace(
+            task_id=exec_task_id, repository_id=repository_id
+        )
 
         try:
             # Stage test files into workspace
             if suite.framework == "unittest":
-                self.workspace_manager.write_isolated_file(exec_task_id, "tests/__init__.py", "")
+                self.workspace_manager.write_isolated_file(
+                    task_id=exec_task_id,
+                    relative_path="tests/__init__.py",
+                    content="",
+                    repository_id=repository_id,
+                )
 
             for case in suite.cases:
                 ext = ".py" if suite.framework in ("pytest", "unittest") else ".test.ts"
                 safe_name = re.sub(r"[^\w\-_]", "_", case.name)
                 case_rel_path = f"tests/test_{safe_name}{ext}"
-                self.workspace_manager.write_isolated_file(exec_task_id, case_rel_path, case.code)
+                self.workspace_manager.write_isolated_file(
+                    task_id=exec_task_id,
+                    relative_path=case_rel_path,
+                    content=case.code,
+                    repository_id=repository_id,
+                )
 
             # 4. Resolve and sanitize command
             raw_cmd = custom_command or self._resolve_default_command(suite.framework)
@@ -177,7 +189,9 @@ class TestPilotRunner:
             )
         finally:
             # Clean up task workspace
-            self.workspace_manager.cleanup_workspace(exec_task_id)
+            self.workspace_manager.cleanup_workspace(
+                task_id=exec_task_id, repository_id=repository_id
+            )
 
     def _resolve_default_command(self, framework: str) -> str:
         if framework == "pytest":

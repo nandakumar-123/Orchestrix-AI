@@ -3,6 +3,7 @@ from __future__ import annotations
 import difflib
 import logging
 import os
+import re
 import shutil
 import uuid
 from dataclasses import dataclass, field
@@ -13,6 +14,9 @@ logger = logging.getLogger("orchestrix.devpilot.workspace")
 DEFAULT_WORKSPACE_BASE_DIR = os.path.join(
     os.environ.get("TEMP", "/tmp"), "orchestrix_devpilot_workspaces"
 )
+
+# Safe pattern for identifier strings (UUIDs, alphanumeric with hyphens/underscores)
+SAFE_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]+$")
 
 
 @dataclass
@@ -37,40 +41,111 @@ class IsolatedWorkspaceState:
 
 class TaskWorkspaceManager:
     """
-    Manages isolated task workspaces for DevPilot code generation and modification.
-    Enforces strict path containment, conflict detection, diff generation, and cleanup.
+    Manages isolated task workspaces for DevPilot and TestPilot executions.
+    Enforces the isolation model: workspace_root / repository_id / task_id.
+    Guarantees strict path containment, conflict detection, diff generation, and cleanup.
     """
 
     def __init__(self, base_workspaces_dir: str = DEFAULT_WORKSPACE_BASE_DIR) -> None:
         self.base_dir = os.path.abspath(base_workspaces_dir)
         os.makedirs(self.base_dir, exist_ok=True)
 
-    def get_task_workspace_dir(self, task_id: uuid.UUID) -> str:
-        """Return the absolute path of the isolated workspace directory for a task."""
-        return os.path.join(self.base_dir, str(task_id))
+    def validate_identifier(
+        self, identifier: uuid.UUID | str, param_name: str = "identifier"
+    ) -> str:
+        """
+        Validate and sanitize a repository or task identifier.
+        Rejects path traversal, null bytes, separators, and invalid characters.
+        """
+        if isinstance(identifier, uuid.UUID):
+            return str(identifier)
+
+        if not isinstance(identifier, str):
+            raise ValueError(f"{param_name} must be a UUID or string, got {type(identifier)}")
+
+        cleaned = identifier.strip()
+        if not cleaned:
+            raise ValueError(f"{param_name} must not be empty")
+
+        if "\x00" in cleaned or "/" in cleaned or "\\" in cleaned or ".." in cleaned:
+            raise PermissionError(
+                f"Path traversal or illegal separator in {param_name}: {identifier}"
+            )
+
+        if not SAFE_IDENTIFIER_PATTERN.match(cleaned):
+            raise ValueError(f"Invalid characters in {param_name}: '{identifier}'")
+
+        return cleaned
+
+    def get_task_workspace_dir(
+        self,
+        task_id: uuid.UUID | str,
+        repository_id: uuid.UUID | str | None = None,
+    ) -> str:
+        """
+        Return the absolute path of the isolated workspace directory for a task.
+        Enforces workspace_root / repository_id / task_id directory layout.
+        """
+        safe_task_id = self.validate_identifier(task_id, "task_id")
+
+        if repository_id is not None:
+            safe_repo_id = self.validate_identifier(repository_id, "repository_id")
+            task_dir = os.path.abspath(os.path.join(self.base_dir, safe_repo_id, safe_task_id))
+        else:
+            # Check if task_id exists within any existing repository subdirectory
+            found_dir: str | None = None
+            if os.path.exists(self.base_dir):
+                for entry in os.scandir(self.base_dir):
+                    if entry.is_dir():
+                        candidate = os.path.join(entry.path, safe_task_id)
+                        if os.path.isdir(candidate):
+                            found_dir = os.path.abspath(candidate)
+                            break
+            task_dir = found_dir or os.path.abspath(os.path.join(self.base_dir, safe_task_id))
+
+        # Enforce strict path containment within base_dir
+        if not (task_dir == self.base_dir or task_dir.startswith(self.base_dir + os.sep)):
+            raise PermissionError(f"Workspace path escapes root: {task_dir}")
+
+        return task_dir
 
     def create_task_workspace(
         self,
-        task_id: uuid.UUID,
+        task_id: uuid.UUID | str,
+        repository_id: uuid.UUID | str | None = None,
         seed_files: dict[str, str] | None = None,
     ) -> str:
         """
-        Initialize an isolated task directory and optionally seed with existing files.
+        Initialize an isolated task directory (workspace_root / repo_id / task_id)
+        and optionally seed with existing files.
         """
-        task_dir = self.get_task_workspace_dir(task_id)
+        task_dir = self.get_task_workspace_dir(task_id, repository_id=repository_id)
         os.makedirs(task_dir, exist_ok=True)
 
         if seed_files:
             for rel_path, content in seed_files.items():
-                self.write_isolated_file(task_id, rel_path, content)
+                self.write_isolated_file(
+                    task_id=task_id,
+                    relative_path=rel_path,
+                    content=content,
+                    repository_id=repository_id,
+                )
 
         return task_dir
 
-    def resolve_safe_path(self, task_id: uuid.UUID, relative_path: str) -> str:
+    def resolve_safe_path(
+        self,
+        task_id: uuid.UUID | str,
+        relative_path: str,
+        repository_id: uuid.UUID | str | None = None,
+    ) -> str:
         """
         Resolve and validate that a file path remains strictly within the isolated workspace.
-        Raises ValueError or PermissionError on path traversal attacks (.. or escape).
+        Raises PermissionError on path traversal attacks (.. or escape or null bytes).
         """
+        if "\x00" in relative_path:
+            raise PermissionError(f"Null byte detected in file path: {relative_path}")
+
         clean_rel = relative_path.replace("\\", "/").strip()
         if not clean_rel or clean_rel.startswith("/"):
             clean_rel = clean_rel.lstrip("/")
@@ -80,33 +155,41 @@ class TaskWorkspaceManager:
         if ".." in parts:
             raise PermissionError(f"Path traversal detected in file path: {relative_path}")
 
-        task_dir = os.path.abspath(self.get_task_workspace_dir(task_id))
+        task_dir = os.path.abspath(
+            self.get_task_workspace_dir(task_id, repository_id=repository_id)
+        )
         full_path = os.path.abspath(os.path.join(task_dir, *parts))
 
         # Guarantee full_path starts with task_dir
-        if not full_path.startswith(task_dir):
+        if not (full_path == task_dir or full_path.startswith(task_dir + os.sep)):
             raise PermissionError(f"Path escape attempt blocked: {relative_path}")
 
         return full_path
 
     def write_isolated_file(
         self,
-        task_id: uuid.UUID,
+        task_id: uuid.UUID | str,
         relative_path: str,
         content: str,
+        repository_id: uuid.UUID | str | None = None,
     ) -> str:
         """
         Write or update a file inside the task's isolated workspace.
         """
-        full_path = self.resolve_safe_path(task_id, relative_path)
+        full_path = self.resolve_safe_path(task_id, relative_path, repository_id=repository_id)
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
         with open(full_path, "w", encoding="utf-8") as f:
             f.write(content)
         return full_path
 
-    def read_isolated_file(self, task_id: uuid.UUID, relative_path: str) -> str | None:
+    def read_isolated_file(
+        self,
+        task_id: uuid.UUID | str,
+        relative_path: str,
+        repository_id: uuid.UUID | str | None = None,
+    ) -> str | None:
         """Read a file from the task's isolated workspace."""
-        full_path = self.resolve_safe_path(task_id, relative_path)
+        full_path = self.resolve_safe_path(task_id, relative_path, repository_id=repository_id)
         if not os.path.exists(full_path):
             return None
         with open(full_path, encoding="utf-8", errors="replace") as f:
@@ -198,12 +281,24 @@ class TaskWorkspaceManager:
                     )
         return conflicts
 
-    def cleanup_workspace(self, task_id: uuid.UUID) -> bool:
+    def cleanup_workspace(
+        self,
+        task_id: uuid.UUID | str,
+        repository_id: uuid.UUID | str | None = None,
+    ) -> bool:
         """Safely discard and remove an isolated task workspace directory."""
-        task_dir = self.get_task_workspace_dir(task_id)
-        if os.path.exists(task_dir):
+        task_dir = self.get_task_workspace_dir(task_id, repository_id=repository_id)
+        if task_dir != self.base_dir and os.path.exists(task_dir):
             try:
                 shutil.rmtree(task_dir)
+                # If repository directory is now empty, remove it to keep scratch clean
+                parent_dir = os.path.dirname(task_dir)
+                if parent_dir != self.base_dir and os.path.exists(parent_dir):
+                    try:
+                        if not os.listdir(parent_dir):
+                            os.rmdir(parent_dir)
+                    except Exception:
+                        pass
                 return True
             except Exception as e:
                 logger.warning(f"Failed to cleanup task workspace {task_dir}: {e}")

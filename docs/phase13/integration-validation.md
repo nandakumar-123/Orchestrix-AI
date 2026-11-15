@@ -94,7 +94,7 @@ flowchart TD
    - Repeated scans deduplicate existing findings and update occurrence timestamps rather than creating redundant records.
    - Audit events are recorded in `secureflow_scan_events`.
 3. **Workflow C — Triage Management:**
-   - Finding lifecycle managed via state transitions: `NEW` -> `CONFIRMED` -> `FALSE_POSITIVE` -> `RESOLVED` / `IGNORED`.
+   - Finding lifecycle managed via state transitions: `OPEN` -> `CONFIRMED` -> `FALSE_POSITIVE` / `ACCEPTED_RISK` -> `RESOLVED`.
    - Every triage action records the reviewing user ID, timestamp, and human rationale note.
 4. **Workflow D — DevPilot Autonomous Remediation Bridge:**
    - Endpoint `POST /api/v1/repositories/{repo_id}/secureflow/findings/{finding_id}/remediate` generates a linked `DevPilotTask`.

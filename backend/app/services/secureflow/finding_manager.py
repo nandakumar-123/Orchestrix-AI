@@ -20,6 +20,35 @@ from app.services.secureflow.schemas import NormalizedFinding
 
 logger = logging.getLogger("orchestrix.secureflow.finding_manager")
 
+# Canonical permitted lifecycle status transitions
+VALID_STATUS_TRANSITIONS: dict[FindingStatus, set[FindingStatus]] = {
+    FindingStatus.OPEN: {
+        FindingStatus.CONFIRMED,
+        FindingStatus.FALSE_POSITIVE,
+        FindingStatus.ACCEPTED_RISK,
+        FindingStatus.RESOLVED,
+    },
+    FindingStatus.CONFIRMED: {
+        FindingStatus.RESOLVED,
+        FindingStatus.FALSE_POSITIVE,
+        FindingStatus.ACCEPTED_RISK,
+        FindingStatus.OPEN,
+    },
+    FindingStatus.FALSE_POSITIVE: {
+        FindingStatus.OPEN,
+        FindingStatus.CONFIRMED,
+    },
+    FindingStatus.ACCEPTED_RISK: {
+        FindingStatus.OPEN,
+        FindingStatus.CONFIRMED,
+        FindingStatus.RESOLVED,
+    },
+    FindingStatus.RESOLVED: {
+        FindingStatus.OPEN,
+        FindingStatus.CONFIRMED,
+    },
+}
+
 
 class FindingManager:
     """
@@ -156,18 +185,62 @@ class FindingManager:
         self,
         db: AsyncSession,
         finding_id: uuid.UUID,
-        new_status: str,
+        new_status: str | FindingStatus,
         note: str | None = None,
     ) -> SecureFlowFinding | None:
         """
         Transition a finding status (e.g. to FALSE_POSITIVE, ACCEPTED_RISK, RESOLVED).
+        Enforces canonical status vocabulary and validates status transitions.
         """
+        # Validate target status against canonical enum
+        target_str = (
+            new_status.value if isinstance(new_status, FindingStatus) else str(new_status).upper()
+        )
+        try:
+            target_status = FindingStatus(target_str)
+        except ValueError as err:
+            raise ValueError(
+                f"Invalid finding status '{target_str}'. "
+                f"Canonical statuses are: {sorted(s.value for s in FindingStatus)}"
+            ) from err
+
         finding = await db.get(SecureFlowFinding, finding_id)
         if not finding:
             return None
 
-        finding.status = new_status
+        # Resolve current status
+        try:
+            current_status = FindingStatus(finding.status)
+        except ValueError:
+            current_status = FindingStatus.OPEN
+
+        # Validate transition
+        if target_status != current_status:
+            allowed_targets = VALID_STATUS_TRANSITIONS.get(current_status, set())
+            if target_status not in allowed_targets:
+                raise ValueError(
+                    f"Invalid finding status transition from '{current_status.value}' to '{target_status.value}'. "
+                    f"Permitted transitions from '{current_status.value}': {sorted(s.value for s in allowed_targets)}"
+                )
+
+        finding.status = target_status.value
         finding.updated_at = utc_now()
+
+        # Record audit event
+        audit_event = SecureFlowScanEvent(
+            scan_id=finding.scan_id,
+            event_type="FINDING_STATUS_UPDATED",
+            message=f"Finding '{finding.title}' status changed from '{current_status.value}' to '{target_status.value}'. Note: {note or 'None'}",
+            details={
+                "finding_id": str(finding.id),
+                "previous_status": current_status.value,
+                "new_status": target_status.value,
+                "note": note,
+            },
+            created_at=utc_now(),
+        )
+        db.add(audit_event)
+
         await db.commit()
         await db.refresh(finding)
         return finding
