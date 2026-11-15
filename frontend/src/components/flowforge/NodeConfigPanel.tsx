@@ -66,7 +66,9 @@ function NodeTypeConfig({
     case "DEVPILOT":
       return (
         <>
+          <ConfigField label="Repository ID" field="repository_id" value={str("repository_id")} placeholder="Repository UUID (or provide at execution)" onChange={onChange} readOnly={readOnly} />
           <ConfigField label="Task Title" field="task_title" value={str("task_title")} placeholder="Implement feature..." onChange={onChange} readOnly={readOnly} />
+          <ConfigField label="Prompt" field="prompt" value={str("prompt")} placeholder="Describe the engineering task" onChange={onChange} readOnly={readOnly} />
           <ConfigField label="Task Type" field="task_type" value={str("task_type")} placeholder="FEATURE / BUG_FIX / REFACTOR" onChange={onChange} readOnly={readOnly} />
           <ConfigField label="Repository Slug" field="repository_slug" value={str("repository_slug")} placeholder="owner/repo" onChange={onChange} readOnly={readOnly} />
         </>
@@ -74,6 +76,8 @@ function NodeTypeConfig({
     case "IMPACTMIND":
       return (
         <>
+          <ConfigField label="Repository ID" field="repository_id" value={str("repository_id")} placeholder="Repository UUID (or provide at execution)" onChange={onChange} readOnly={readOnly} />
+          <ConfigField label="Diff Text" field="diff_text" value={str("diff_text")} placeholder="Optional unified diff" onChange={onChange} readOnly={readOnly} />
           <ConfigField label="Analysis Mode" field="analysis_mode" value={str("analysis_mode")} placeholder="FULL / QUICK" onChange={onChange} readOnly={readOnly} />
           <ConfigField label="Target Branch" field="target_branch" value={str("target_branch")} placeholder="main" onChange={onChange} readOnly={readOnly} />
         </>
@@ -81,14 +85,19 @@ function NodeTypeConfig({
     case "TESTPILOT":
       return (
         <>
+          <ConfigField label="Repository ID" field="repository_id" value={str("repository_id")} placeholder="Repository UUID (or provide at execution)" onChange={onChange} readOnly={readOnly} />
+          <ConfigField label="Action" field="action" value={str("action")} placeholder="GENERATE / DETECT" onChange={onChange} readOnly={readOnly} />
           <ConfigField label="Test Framework" field="framework" value={str("framework")} placeholder="pytest / jest / vitest" onChange={onChange} readOnly={readOnly} />
           <ConfigField label="Test Type" field="test_type" value={str("test_type")} placeholder="unit / integration / e2e" onChange={onChange} readOnly={readOnly} />
           <ConfigField label="Target Files" field="target_files" value={str("target_files")} placeholder="app/core.py, src/utils.ts" onChange={onChange} readOnly={readOnly} />
+          <ConfigField label="Source Context" field="source_context" value={str("source_context")} placeholder="Relevant code or task context" onChange={onChange} readOnly={readOnly} />
         </>
       );
     case "SECUREFLOW":
       return (
         <>
+          <ConfigField label="Repository ID" field="repository_id" value={str("repository_id")} placeholder="Repository UUID (or provide at execution)" onChange={onChange} readOnly={readOnly} />
+          <ConfigField label="Target Directory" field="target_dir" value={str("target_dir")} placeholder="Approved local repository directory" onChange={onChange} readOnly={readOnly} />
           <ConfigField label="Scan Type" field="scan_type" value={str("scan_type")} placeholder="FULL / QUICK / SECRETS" onChange={onChange} readOnly={readOnly} />
           <ConfigField label="Risk Threshold" field="risk_threshold" value={str("risk_threshold")} placeholder="LOW / MEDIUM / HIGH / CRITICAL" onChange={onChange} readOnly={readOnly} />
         </>

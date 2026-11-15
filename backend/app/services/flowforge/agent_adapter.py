@@ -7,7 +7,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.devmemory import MemoryConsumerAgent
 from app.db.models.repository import Repository
+from app.services.devmemory.memory_context import DevMemoryContextBuilder
+from app.services.devmemory.schemas import MemoryContextRequest
 from app.services.devpilot.orchestrator import DevPilotOrchestrator
 from app.services.impactmind.engine import ImpactMindEngine
 from app.services.secureflow.service import SecureFlowService
@@ -44,11 +47,13 @@ class FlowForgeAgentAdapter:
         impactmind_engine: ImpactMindEngine | None = None,
         testpilot_service: TestPilotService | None = None,
         secureflow_service: SecureFlowService | None = None,
+        memory_context_builder: DevMemoryContextBuilder | None = None,
     ) -> None:
         self._devpilot = devpilot_orchestrator
         self._impactmind = impactmind_engine
         self._testpilot = testpilot_service
         self._secureflow = secureflow_service
+        self._memory_context_builder = memory_context_builder or DevMemoryContextBuilder()
 
     def get_devpilot(self) -> DevPilotOrchestrator:
         if self._devpilot is None:
@@ -88,19 +93,91 @@ class FlowForgeAgentAdapter:
         Uses execution_id + node_id as the stable idempotency key to avoid cross-task collisions.
         """
         agent_type_upper = agent_type.upper()
+        memory_context, memory_reference = await self._retrieve_memory_context(
+            db=db,
+            agent_type=agent_type_upper,
+            workspace_id=workspace_id,
+            config=config,
+            context_data=context_data,
+        )
 
         if agent_type_upper == "DEVPILOT":
-            return await self._execute_devpilot(
-                db, workspace_id, node_id, config, context_data, execution_id, attempt_number
+            devpilot_config = dict(config)
+            if memory_context:
+                base_prompt = str(devpilot_config.get("prompt") or context_data.get("prompt") or "")
+                devpilot_config["prompt"] = f"{base_prompt}\n\n{memory_context}".strip()
+            result = await self._execute_devpilot(
+                db,
+                workspace_id,
+                node_id,
+                devpilot_config,
+                context_data,
+                execution_id,
+                attempt_number,
             )
         elif agent_type_upper == "IMPACTMIND":
-            return await self._execute_impactmind(db, workspace_id, node_id, config, context_data)
+            result = await self._execute_impactmind(db, workspace_id, node_id, config, context_data)
         elif agent_type_upper == "TESTPILOT":
-            return await self._execute_testpilot(db, workspace_id, node_id, config, context_data)
+            result = await self._execute_testpilot(
+                db, workspace_id, node_id, config, context_data, memory_context
+            )
         elif agent_type_upper == "SECUREFLOW":
-            return await self._execute_secureflow(db, workspace_id, node_id, config, context_data)
+            result = await self._execute_secureflow(db, workspace_id, node_id, config, context_data)
         else:
             raise AgentUnavailableError(f"Unsupported agent type: {agent_type}")
+
+        # Store only durable citations and retrieval metadata.  Prompt text, embeddings,
+        # and memory contents must never be persisted in FlowForge execution records.
+        result["memory_context"] = memory_reference
+        return result
+
+    async def _retrieve_memory_context(
+        self,
+        db: AsyncSession,
+        agent_type: str,
+        workspace_id: uuid.UUID,
+        config: dict[str, Any],
+        context_data: dict[str, Any],
+    ) -> tuple[str, dict[str, Any]]:
+        """Retrieve verified, tenant-scoped memory without making it a workflow dependency."""
+        try:
+            repository_id_raw = config.get("repository_id") or context_data.get("repository_id")
+            repository_id = uuid.UUID(str(repository_id_raw)) if repository_id_raw else None
+            consumer = MemoryConsumerAgent(agent_type)
+            query = str(
+                config.get("prompt")
+                or config.get("title")
+                or config.get("task_title")
+                or config.get("action")
+                or f"FlowForge {agent_type} workflow step"
+            )
+            response = await self._memory_context_builder.build_context(
+                db=db,
+                workspace_id=workspace_id,
+                request=MemoryContextRequest(
+                    query=query,
+                    repository_id=repository_id,
+                    agent=consumer,
+                    include_unverified=False,
+                    max_tokens=1000,
+                ),
+            )
+            return response.context_markdown, {
+                "status": "RETRIEVED",
+                "memory_ids": [str(memory_id) for memory_id in response.citations],
+                "memories_used": response.memories_used,
+                "verified_count": response.verified_count,
+                "unverified_count": response.unverified_count,
+                "repository_id": str(repository_id) if repository_id else None,
+            }
+        except Exception as exc:
+            # Memory is advisory.  Record the safe fallback without exposing internals.
+            logger.warning(
+                "DevMemory retrieval unavailable for FlowForge %s step: %s",
+                agent_type,
+                type(exc).__name__,
+            )
+            return "", {"status": "UNAVAILABLE", "reason": type(exc).__name__}
 
     async def _execute_devpilot(
         self,
@@ -139,7 +216,7 @@ class FlowForgeAgentAdapter:
             or context_data.get("prompt")
             or "FlowForge autonomous engineering step"
         )
-        title = config.get("title", f"FlowForge Step - {node_id}")
+        title = config.get("title") or config.get("task_title") or f"FlowForge Step - {node_id}"
         task_type = config.get("task_type", "FEATURE")
 
         orchestrator = self.get_devpilot()
@@ -280,17 +357,24 @@ class FlowForgeAgentAdapter:
                 f"Repository {repository_id} not found in workspace {workspace_id}"
             )
 
-        base_sha = config.get("base_commit_sha") or context_data.get("base_commit_sha") or "HEAD~1"
-        head_sha = config.get("head_commit_sha") or context_data.get("head_commit_sha") or "HEAD"
-
-        # ImpactMind analysis reference
+        assessment = await self.get_impactmind().analyze_changes(
+            db=db,
+            workspace_id=workspace_id,
+            repository_id=repository_id,
+            diff_text=config.get("diff_text") or context_data.get("diff_text"),
+            github_compare_payload=config.get("github_compare_payload"),
+            base_commit_sha=config.get("base_commit_sha") or context_data.get("base_commit_sha"),
+            target_commit_sha=config.get("head_commit_sha") or context_data.get("head_commit_sha"),
+            user_id=uuid.UUID(str(context_data["user_id"]))
+            if context_data.get("user_id")
+            else None,
+        )
         return {
             "status": "COMPLETED",
             "agent": "IMPACTMIND",
             "repository_id": str(repository_id),
-            "base_commit_sha": base_sha,
-            "head_commit_sha": head_sha,
-            "message": "ImpactMind analysis evaluated successfully.",
+            "assessment_id": str(assessment.id),
+            "message": "ImpactMind assessment persisted.",
         }
 
     async def _execute_testpilot(
@@ -300,6 +384,7 @@ class FlowForgeAgentAdapter:
         node_id: str,
         config: dict[str, Any],
         context_data: dict[str, Any],
+        memory_context: str,
     ) -> dict[str, Any]:
         repository_id_str = config.get("repository_id") or context_data.get("repository_id")
         if not repository_id_str:
@@ -322,16 +407,51 @@ class FlowForgeAgentAdapter:
                 f"Repository {repository_id} not found in workspace {workspace_id}"
             )
 
-        action = config.get("action", "run")
-        framework = config.get("framework", "pytest")
+        action = str(config.get("action", "GENERATE")).upper()
+        target_dir = config.get("target_dir") or context_data.get("target_dir")
+        if action == "DETECT":
+            if not target_dir:
+                return {
+                    "status": "SKIPPED",
+                    "agent": "TESTPILOT",
+                    "repository_id": str(repository_id),
+                    "message": "TestPilot detection requires target_dir.",
+                }
+            detection = self.get_testpilot().detect_framework(str(target_dir))
+            return {
+                "status": "COMPLETED",
+                "agent": "TESTPILOT",
+                "repository_id": str(repository_id),
+                "action": action,
+                "framework": detection.framework,
+                "detection": detection.to_dict(),
+            }
 
+        target_files = config.get("target_files", [])
+        if isinstance(target_files, str):
+            target_files = [item.strip() for item in target_files.split(",") if item.strip()]
+        if not isinstance(target_files, list) or not target_files:
+            return {
+                "status": "SKIPPED",
+                "agent": "TESTPILOT",
+                "repository_id": str(repository_id),
+                "message": "TestPilot generation requires target_files.",
+            }
+        suite = await self.get_testpilot().generate_test_suite(
+            db=db,
+            workspace_id=workspace_id,
+            repository_id=repository_id,
+            framework=str(config.get("framework", "pytest")),
+            target_files=target_files,
+            source_context=f"{config.get('source_context', '')}\n\n{memory_context}".strip(),
+            test_type=str(config.get("test_type", "UNIT")),
+        )
         return {
             "status": "COMPLETED",
             "agent": "TESTPILOT",
             "repository_id": str(repository_id),
-            "action": action,
-            "framework": framework,
-            "message": "TestPilot tests executed successfully.",
+            "suite_id": str(suite.id),
+            "suite_status": suite.status,
         }
 
     async def _execute_secureflow(
@@ -363,12 +483,24 @@ class FlowForgeAgentAdapter:
                 f"Repository {repository_id} not found in workspace {workspace_id}"
             )
 
-        scan_type = config.get("scan_type", "FULL")
-
+        target_dir = config.get("target_dir") or context_data.get("target_dir")
+        if not target_dir:
+            return {
+                "status": "SKIPPED",
+                "agent": "SECUREFLOW",
+                "repository_id": str(repository_id),
+                "message": "SecureFlow scan requires target_dir.",
+            }
+        scan = await self.get_secureflow().run_scan(
+            db=db,
+            workspace_id=workspace_id,
+            repository_id=repository_id,
+            target_dir=str(target_dir),
+            scan_type=str(config.get("scan_type", "FULL")),
+        )
         return {
             "status": "COMPLETED",
             "agent": "SECUREFLOW",
             "repository_id": str(repository_id),
-            "scan_type": scan_type,
-            "message": "SecureFlow security scan completed successfully.",
+            "scan": scan.to_dict(),
         }

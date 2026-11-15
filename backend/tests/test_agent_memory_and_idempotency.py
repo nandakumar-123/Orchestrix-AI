@@ -22,6 +22,8 @@ from app.services.devmemory.schemas import (
     MemoryEvidenceCreateRequest,
 )
 from app.services.flowforge.agent_adapter import FlowForgeAgentAdapter
+from app.services.flowforge.definition_service import WorkflowDefinitionService
+from app.services.flowforge.execution_engine import FlowForgeExecutionEngine
 
 
 @pytest.fixture
@@ -232,3 +234,103 @@ async def test_flowforge_dispatch_idempotency_title_independence(
     await test_session.commit()
     assert res1_reused["task_id"] == res1["task_id"]
     assert res1_reused["reused"] is True
+
+
+@pytest.mark.asyncio
+async def test_flowforge_persists_verified_memory_references_for_agent_dispatch(
+    test_session: AsyncSession,
+) -> None:
+    """FlowForge injects only verified, repository-scoped DevMemory citations into DevPilot."""
+    workspace = Workspace(name="WS-FlowForge-Memory", slug="ws-flowforge-memory")
+    other_workspace = Workspace(name="WS-Other-Memory", slug="ws-other-memory")
+    test_session.add_all([workspace, other_workspace])
+    await test_session.flush()
+
+    installation = GitHubInstallation(
+        workspace_id=workspace.id,
+        installation_id=7001,
+        account_login="memory-org",
+        account_type="Organization",
+        account_id=7001,
+    )
+    test_session.add(installation)
+    await test_session.flush()
+    repository = Repository(
+        workspace_id=workspace.id,
+        installation_id=installation.id,
+        name="memory-repo",
+        full_name="memory-org/memory-repo",
+        owner_login="memory-org",
+        html_url="https://github.com/memory-org/memory-repo",
+        github_repository_id=7001,
+        default_branch="main",
+    )
+    test_session.add(repository)
+    await test_session.flush()
+
+    memory_service = DevMemoryService()
+    memory = await memory_service.create_memory(
+        test_session,
+        workspace.id,
+        MemoryCreateRequest(
+            repository_id=repository.id,
+            memory_type=MemoryType.ENGINEERING_CONVENTION,
+            title="Authentication token convention",
+            content="Validate bearer tokens before authorization decisions.",
+        ),
+    )
+    await memory_service.verify_memory(
+        test_session,
+        workspace.id,
+        memory.id,
+        evidence=MemoryEvidenceCreateRequest(
+            evidence_type=EvidenceType.CODE_REFERENCE,
+            evidence_content="Authentication middleware test confirms token validation.",
+        ),
+    )
+    # A same-word memory in another workspace must not appear in this execution.
+    await memory_service.create_memory(
+        test_session,
+        other_workspace.id,
+        MemoryCreateRequest(
+            memory_type=MemoryType.ENGINEERING_CONVENTION,
+            title="Authentication token convention",
+            content="Unrelated workspace-only token convention.",
+        ),
+    )
+
+    graph = {
+        "nodes": [
+            {"id": "trigger", "node_type": "TRIGGER", "config": {}},
+            {
+                "id": "devpilot",
+                "node_type": "DEVPILOT",
+                "config": {"prompt": "Improve authentication token validation."},
+            },
+            {"id": "end", "node_type": "END", "config": {}},
+        ],
+        "connections": [
+            {"source_node_id": "trigger", "target_node_id": "devpilot"},
+            {"source_node_id": "devpilot", "target_node_id": "end"},
+        ],
+    }
+    workflow, _ = await WorkflowDefinitionService().create_workflow(
+        db=test_session,
+        workspace_id=workspace.id,
+        user_id=None,
+        name="Memory-aware DevPilot workflow",
+        definition_json=graph,
+    )
+
+    execution = await FlowForgeExecutionEngine().start_execution(
+        db=test_session,
+        workflow_id=workflow.id,
+        workspace_id=workspace.id,
+        context_data={"repository_id": str(repository.id)},
+    )
+    devpilot_step = next(step for step in execution.steps if step.node_id == "devpilot")
+    memory_ref = (devpilot_step.output_reference or {}).get("memory_context")
+    assert memory_ref is not None
+    assert memory_ref["status"] == "RETRIEVED"
+    assert memory_ref["memory_ids"] == [str(memory.id)]
+    assert memory_ref["verified_count"] == 1

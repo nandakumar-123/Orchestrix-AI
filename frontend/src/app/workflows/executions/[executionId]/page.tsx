@@ -6,7 +6,6 @@ import { useParams } from "next/navigation";
 import { ReactFlowProvider } from "@xyflow/react";
 import { AppShell } from "@/components/layout/app-shell";
 import { PageHeader } from "@/components/shared/page-header";
-import { AgentMemoryContext } from "@/components/shared/agent-memory-context";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -60,6 +59,21 @@ const STEP_STATUS_STYLES: Record<WorkflowStepStatus, string> = {
   CANCELLED: "bg-slate-100 text-slate-400",
   TIMED_OUT: "bg-orange-100 text-orange-600",
 };
+
+interface PersistedMemoryReference {
+  status?: string;
+  memory_ids?: string[];
+  memories_used?: number;
+  verified_count?: number;
+}
+
+function persistedMemoryReference(
+  output: Record<string, unknown> | null | undefined
+): PersistedMemoryReference | null {
+  const candidate = output?.memory_context;
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+  return candidate as PersistedMemoryReference;
+}
 
 function formatDT(d: string) {
   return new Date(d).toLocaleString("en-US", {
@@ -372,14 +386,6 @@ function ExecutionDetailContent() {
         }
       />
 
-      {/* DevMemory Active Context */}
-      <AgentMemoryContext
-        agent="FLOWFORGE"
-        query={`Workflow execution ${execution.workflow_id} step coordination conventions`}
-        workspaceId={workspaceId}
-        title="FlowForge: Pipeline Execution Conventions & Decisions (DevMemory)"
-      />
-
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Left column: summary + steps + approvals */}
         <div className="lg:col-span-1 space-y-4">
@@ -472,6 +478,23 @@ function ExecutionDetailContent() {
                         {formatDT(step.started_at)}
                       </p>
                     )}
+                    {(() => {
+                      const memory = persistedMemoryReference(step.output_reference);
+                      if (!memory) return null;
+                      if (memory.status !== "RETRIEVED") {
+                        return <p className="text-[9px] text-slate-400 mt-0.5">Memory context unavailable; agent continued safely.</p>;
+                      }
+                      return (
+                        <div className="mt-1 text-[9px] text-indigo-700">
+                          <p>{memory.memories_used ?? 0} verified memory reference{memory.memories_used === 1 ? "" : "s"} used</p>
+                          {memory.memory_ids?.map((id) => (
+                            <Link key={id} href={`/memory/${id}`} className="mr-1 font-mono hover:underline">
+                              {id.slice(0, 8)}…
+                            </Link>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
               ))}

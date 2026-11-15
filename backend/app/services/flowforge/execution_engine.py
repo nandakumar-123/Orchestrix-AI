@@ -488,10 +488,15 @@ class FlowForgeExecutionEngine:
                             if not src_step:
                                 # Preceding node not even evaluated yet
                                 continue
-                            if src_step.status == WorkflowStepStatus.COMPLETED:
+                            if src_step.status in {
+                                WorkflowStepStatus.COMPLETED,
+                                WorkflowStepStatus.SKIPPED,
+                            }:
                                 # Check if conditional branch matches
                                 branch_cond = inc.get("condition_branch")
                                 if branch_cond:
+                                    if src_step.status == WorkflowStepStatus.SKIPPED:
+                                        continue
                                     src_output = src_step.output_reference or {}
                                     if (
                                         str(src_output.get("branch")).lower()
@@ -753,9 +758,29 @@ class FlowForgeExecutionEngine:
                                     execution_id=execution.id,
                                     attempt_number=current_attempt,
                                 )
-                            step.status = WorkflowStepStatus.COMPLETED
+                            step.status = (
+                                WorkflowStepStatus.SKIPPED
+                                if output_ref.get("status") == "SKIPPED"
+                                else WorkflowStepStatus.COMPLETED
+                            )
                             step.completed_at = utc_now()
                             step.output_reference = output_ref
+
+                            memory_reference = output_ref.get("memory_context")
+                            if memory_reference:
+                                db.add(
+                                    WorkflowEvent(
+                                        execution_id=execution.id,
+                                        workspace_id=execution.workspace_id,
+                                        event_type="MEMORY_CONTEXT_RETRIEVED",
+                                        payload_json={
+                                            "node_id": node_id,
+                                            "agent_type": node_type,
+                                            "memory_context": memory_reference,
+                                        },
+                                        created_at=utc_now(),
+                                    )
+                                )
 
                             # Merge output reference into context for downstream nodes
                             context[f"node_{node_id}"] = output_ref
