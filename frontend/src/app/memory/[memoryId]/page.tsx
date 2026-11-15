@@ -28,11 +28,13 @@ import {
   outdateMemory,
   archiveMemory,
   attachEvidence,
+  createRelationship,
   type MemoryResponse,
   type MemoryEvidenceResponse,
   type MemoryRelationshipResponse,
   type MemoryVerificationStatus,
   type EvidenceType,
+  type MemoryRelationshipType,
 } from "@/lib/devmemory";
 
 const STATUS_CONFIG: Record<
@@ -79,6 +81,12 @@ function MemoryDetailContent() {
   const [evidenceType, setEvidenceType] = React.useState<EvidenceType>("CODE_REFERENCE");
   const [evidenceContent, setEvidenceContent] = React.useState("");
   const [sourceReference, setSourceReference] = React.useState("");
+
+  // Relationship modal/input state
+  const [isAddingRelationship, setIsAddingRelationship] = React.useState(false);
+  const [targetMemoryId, setTargetMemoryId] = React.useState("");
+  const [relationshipType, setRelationshipType] = React.useState<MemoryRelationshipType>("RELATES_TO");
+  const [relConfidence, setRelConfidence] = React.useState(0.9);
 
   const workspaceId = user?.workspaces?.[0]?.workspace_id ?? null;
   const userRole = user?.workspaces?.[0]?.role;
@@ -204,6 +212,27 @@ function MemoryDetailContent() {
       await loadMemoryData();
     } catch (err) {
       alert(err instanceof Error ? err.message : "Failed to attach evidence");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleCreateRelationship = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!workspaceId || !memoryId || !targetMemoryId.trim()) return;
+    setActionLoading(true);
+    try {
+      await createRelationship(workspaceId, {
+        source_memory_id: memoryId,
+        target_memory_id: targetMemoryId.trim(),
+        relationship_type: relationshipType,
+        confidence_score: relConfidence,
+      });
+      setTargetMemoryId("");
+      setIsAddingRelationship(false);
+      await loadMemoryData();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to create relationship");
     } finally {
       setActionLoading(false);
     }
@@ -452,8 +481,72 @@ function MemoryDetailContent() {
               <Network className="h-4 w-4 text-indigo-600" />
               Connected Memories & Graph ({relationships.length})
             </CardTitle>
+            {canVerify && !isAddingRelationship && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsAddingRelationship(true)}
+                className="h-7 text-xs border-indigo-200 text-indigo-700 hover:bg-indigo-50"
+              >
+                <Plus className="h-3 w-3 mr-1" />
+                Link Memory
+              </Button>
+            )}
           </CardHeader>
           <CardContent className="p-4 space-y-3">
+            {isAddingRelationship && (
+              <form onSubmit={handleCreateRelationship} className="p-3 bg-indigo-50/50 border border-indigo-200 rounded-lg space-y-2.5 mb-3">
+                <h4 className="text-xs font-semibold text-indigo-900">Link Semantic Relationship</h4>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] font-medium text-slate-500 uppercase">Target Memory ID</label>
+                    <input
+                      type="text"
+                      value={targetMemoryId}
+                      onChange={(e) => setTargetMemoryId(e.target.value)}
+                      placeholder="UUID of related memory"
+                      className="w-full text-xs h-7 px-2 border rounded bg-white font-mono text-slate-700"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-medium text-slate-500 uppercase">Relationship Type</label>
+                    <select
+                      value={relationshipType}
+                      onChange={(e) => setRelationshipType(e.target.value as MemoryRelationshipType)}
+                      className="w-full text-xs h-7 px-2 border rounded bg-white text-slate-700"
+                    >
+                      <option value="RELATES_TO">RELATES_TO</option>
+                      <option value="EXTENDS">EXTENDS</option>
+                      <option value="SUPERSEDES">SUPERSEDES</option>
+                      <option value="CONTRADICTS">CONTRADICTS</option>
+                      <option value="CAUSED_BY">CAUSED_BY</option>
+                      <option value="RESOLVED_BY">RESOLVED_BY</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[10px] font-medium text-slate-500 uppercase">Confidence (0.1 to 1.0)</label>
+                  <input
+                    type="number"
+                    min="0.1"
+                    max="1.0"
+                    step="0.05"
+                    value={relConfidence}
+                    onChange={(e) => setRelConfidence(parseFloat(e.target.value))}
+                    className="w-full text-xs h-7 px-2 border rounded bg-white font-mono text-slate-700"
+                  />
+                </div>
+                <div className="flex gap-2 justify-end">
+                  <Button type="button" variant="ghost" size="sm" onClick={() => setIsAddingRelationship(false)} className="h-7 text-xs">
+                    Cancel
+                  </Button>
+                  <Button type="submit" size="sm" className="h-7 text-xs bg-indigo-600 text-white" disabled={actionLoading}>
+                    Create Edge
+                  </Button>
+                </div>
+              </form>
+            )}
             {relationships.length === 0 ? (
               <p className="text-xs text-slate-400 italic py-4 text-center">
                 No semantic relationships linked to this memory node.

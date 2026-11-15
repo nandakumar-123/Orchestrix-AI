@@ -622,3 +622,74 @@ async def test_csrf_protection_and_inactive_users(
         f"/api/v1/repositories/{repo.id}/testpilot/suites?workspace_id={ws_id}"
     )
     assert res_inactive.status_code == 401
+
+
+# =============================================================================
+# 6. DevMemory RBAC and Tenant Isolation Verification
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_devmemory_rbac_and_tenant_isolation(
+    api_client: AsyncClient, rbac_env: dict[str, Any]
+) -> None:
+    """Comprehensive check of DevMemory RBAC policies and workspace tenant boundary isolation."""
+    ws_1_id = rbac_env["ws_1_id"]
+    ws_2_id = rbac_env["ws_2_id"]
+    viewer = rbac_env["viewer"]
+    member = rbac_env["member"]
+    admin = rbac_env["admin"]
+
+    # 1. VIEWER cannot create memory (Requires MEMBER+) -> 403 Forbidden
+    app.dependency_overrides[get_current_user] = lambda: viewer
+    create_viewer_res = await api_client.post(
+        f"/api/v1/devmemory/memories?workspace_id={ws_1_id}",
+        json={
+            "memory_type": "ARCHITECTURE_DECISION",
+            "title": "Viewer Prohibited Memory",
+            "content": "This should be forbidden for viewers",
+        },
+    )
+    assert create_viewer_res.status_code == 403
+
+    # 2. MEMBER can create memory -> 201 Created
+    app.dependency_overrides[get_current_user] = lambda: member
+    create_member_res = await api_client.post(
+        f"/api/v1/devmemory/memories?workspace_id={ws_1_id}",
+        json={
+            "memory_type": "ARCHITECTURE_DECISION",
+            "title": "Member Valid Memory",
+            "content": "Architecture decision made by member",
+        },
+    )
+    assert create_member_res.status_code == 201
+    memory_id = create_member_res.json()["id"]
+
+    # 3. VIEWER can read memory catalog & detail -> 200 OK
+    app.dependency_overrides[get_current_user] = lambda: viewer
+    get_viewer_res = await api_client.get(
+        f"/api/v1/devmemory/memories/{memory_id}?workspace_id={ws_1_id}"
+    )
+    assert get_viewer_res.status_code == 200
+    assert get_viewer_res.json()["id"] == memory_id
+
+    # 4. Cross-workspace tenant isolation: Member of WS1 attempting access with WS2 workspace_id -> 403 Forbidden
+    app.dependency_overrides[get_current_user] = lambda: member
+    cross_tenant_res = await api_client.get(
+        f"/api/v1/devmemory/memories/{memory_id}?workspace_id={ws_2_id}"
+    )
+    assert cross_tenant_res.status_code == 403
+
+    # 5. MEMBER cannot archive memory (Requires ADMIN+) -> 403 Forbidden
+    archive_member_res = await api_client.post(
+        f"/api/v1/devmemory/memories/{memory_id}/archive?workspace_id={ws_1_id}&reason=Deprecate",
+    )
+    assert archive_member_res.status_code == 403
+
+    # 6. ADMIN can archive memory -> 200 OK
+    app.dependency_overrides[get_current_user] = lambda: admin
+    archive_admin_res = await api_client.post(
+        f"/api/v1/devmemory/memories/{memory_id}/archive?workspace_id={ws_1_id}&reason=Deprecate",
+    )
+    assert archive_admin_res.status_code == 200
+    assert archive_admin_res.json()["verification_status"] == "ARCHIVED"

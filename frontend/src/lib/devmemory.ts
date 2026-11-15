@@ -22,7 +22,10 @@ export type MemoryType =
   | "IMPLEMENTATION_DISCOVERY"
   | "ENGINEERING_DISCOVERY"
   | "KNOWN_LIMITATION"
-  | "VERIFIED_SOLUTION";
+  | "VERIFIED_SOLUTION"
+  | "SECURITY_KNOWLEDGE"
+  | "TEST_KNOWLEDGE"
+  | "DEPENDENCY_KNOWLEDGE";
 
 export type MemoryVerificationStatus =
   | "UNVERIFIED"
@@ -34,7 +37,14 @@ export type EvidenceType =
   | "CODE_REFERENCE"
   | "GIT_COMMIT"
   | "CODE_DIFF"
-  | "TEST_RESULT";
+  | "TEST_RESULT"
+  | "SECURITY_FINDING"
+  | "AGENT_TASK"
+  | "ARCHITECTURE_DOCUMENT"
+  | "USER_DECISION"
+  | "CODE_SNIPPET"
+  | "LOG_TRACE"
+  | "DIFF_PATCH";
 
 export type MemoryRelationshipType =
   | "EXTENDS"

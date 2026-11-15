@@ -300,3 +300,40 @@ async def test_memory_stats_endpoint(test_session: AsyncSession) -> None:
     assert stats.archived_count == 0
     assert stats.type_counts[MemoryType.ARCHITECTURE_DECISION.value] == 1
     assert stats.type_counts[MemoryType.ENGINEERING_CONVENTION.value] == 1
+
+
+@pytest.mark.asyncio
+async def test_relationship_invalid_type_validation(test_session: AsyncSession) -> None:
+    """Test creating a relationship with an invalid relationship type raises validation error."""
+    from pydantic import ValidationError
+
+    ws = Workspace(name="WS-RelVal", slug="ws-relval")
+    test_session.add(ws)
+    await test_session.flush()
+
+    mem_service = DevMemoryService()
+    await mem_service.create_memory(
+        test_session,
+        ws.id,
+        MemoryCreateRequest(
+            memory_type=MemoryType.TECHNICAL_DECISION,
+            title="Tech 1",
+            content="Content 1",
+        ),
+    )
+    m2 = await mem_service.create_memory(
+        test_session,
+        ws.id,
+        MemoryCreateRequest(
+            memory_type=MemoryType.TECHNICAL_DECISION,
+            title="Tech 2",
+            content="Content 2",
+        ),
+    )
+    await test_session.flush()
+
+    with pytest.raises(ValidationError):
+        MemoryRelationshipCreateRequest(
+            target_memory_id=m2.id,
+            relationship_type="INVALID_RELATIONSHIP_TYPE",  # type: ignore[arg-type]
+        )
