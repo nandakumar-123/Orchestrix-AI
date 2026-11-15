@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     String,
     Text,
@@ -134,6 +135,12 @@ class EngineeringMemory(Base):
             "workspace_id", "content_hash", name="uq_devmemory_workspace_content_hash"
         ),
         UniqueConstraint("id", "workspace_id", name="uq_devmemory_id_workspace"),
+        ForeignKeyConstraint(
+            ["repository_id", "workspace_id"],
+            ["repositories.id", "repositories.workspace_id"],
+            name="fk_devmemory_repository_workspace",
+            ondelete="CASCADE",
+        ),
         CheckConstraint(
             "confidence_score >= 0.0 AND confidence_score <= 1.0",
             name="ck_devmemory_confidence_range",
@@ -253,6 +260,7 @@ class EngineeringMemory(Base):
         "MemoryEvidence",
         back_populates="memory",
         cascade="all, delete-orphan",
+        foreign_keys="[MemoryEvidence.memory_id]",
         lazy="selectin",
     )
     outgoing_relationships: Mapped[list[MemoryRelationship]] = relationship(
@@ -273,6 +281,7 @@ class EngineeringMemory(Base):
         "MemoryAccessLog",
         back_populates="memory",
         cascade="all, delete-orphan",
+        foreign_keys="[MemoryAccessLog.memory_id]",
         lazy="selectin",
     )
 
@@ -285,6 +294,12 @@ class MemoryEvidence(Base):
     __tablename__ = "memory_evidence"
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["memory_id", "workspace_id"],
+            ["engineering_memories.id", "engineering_memories.workspace_id"],
+            name="fk_memory_evidence_memory_workspace",
+            ondelete="CASCADE",
+        ),
         CheckConstraint(
             "evidence_type IN ('CODE_SNIPPET', 'LOG_TRACE', 'DIFF_PATCH', 'TEST_OUTPUT', 'SECURITY_FINDING', 'BENCHMARK_RESULT')",
             name="ck_devmemory_evidence_type",
@@ -328,7 +343,10 @@ class MemoryEvidence(Base):
 
     # Relationships
     memory: Mapped[EngineeringMemory] = relationship(
-        "EngineeringMemory", back_populates="evidence", lazy="selectin"
+        "EngineeringMemory",
+        back_populates="evidence",
+        foreign_keys=[memory_id],
+        lazy="selectin",
     )
 
 
@@ -346,6 +364,18 @@ class MemoryRelationship(Base):
             "target_memory_id",
             "relationship_type",
             name="uq_devmemory_rel_source_target_type",
+        ),
+        ForeignKeyConstraint(
+            ["source_memory_id", "workspace_id"],
+            ["engineering_memories.id", "engineering_memories.workspace_id"],
+            name="fk_memory_rel_source_workspace",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["target_memory_id", "workspace_id"],
+            ["engineering_memories.id", "engineering_memories.workspace_id"],
+            name="fk_memory_rel_target_workspace",
+            ondelete="CASCADE",
         ),
         CheckConstraint(
             "confidence_score >= 0.0 AND confidence_score <= 1.0",
@@ -425,6 +455,12 @@ class MemoryAccessLog(Base):
     __tablename__ = "memory_access_logs"
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["memory_id", "workspace_id"],
+            ["engineering_memories.id", "engineering_memories.workspace_id"],
+            name="fk_memory_access_logs_memory_workspace",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(
             "agent_type IN ('DEVPILOT', 'IMPACTMIND', 'TESTPILOT', 'SECUREFLOW', 'FLOWFORGE', 'USER')",
             name="ck_devmemory_access_agent_type",
@@ -449,7 +485,7 @@ class MemoryAccessLog(Base):
     )
     memory_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("engineering_memories.id", ondelete="CASCADE"),
+        ForeignKey("engineering_memories.id", ondelete="RESTRICT"),
         nullable=False,
     )
     workspace_id: Mapped[uuid.UUID] = mapped_column(
@@ -477,5 +513,8 @@ class MemoryAccessLog(Base):
 
     # Relationships
     memory: Mapped[EngineeringMemory] = relationship(
-        "EngineeringMemory", back_populates="access_logs", lazy="selectin"
+        "EngineeringMemory",
+        back_populates="access_logs",
+        foreign_keys=[memory_id],
+        lazy="selectin",
     )

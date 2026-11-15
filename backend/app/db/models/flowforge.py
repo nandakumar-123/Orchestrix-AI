@@ -364,6 +364,12 @@ class WorkflowExecution(Base):
             name="fk_flowforge_executions_version",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["workflow_id", "workspace_id"],
+            ["flowforge_workflows.id", "flowforge_workflows.workspace_id"],
+            name="fk_flowforge_executions_workflow_workspace",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(
             "status IN ('PENDING', 'RUNNING', 'WAITING_FOR_APPROVAL', 'COMPLETED', 'FAILED', 'CANCELLED', 'TIMED_OUT')",
             name="ck_flowforge_executions_status",
@@ -477,6 +483,13 @@ class WorkflowStepExecution(Base):
 
     __table_args__ = (
         UniqueConstraint("id", "execution_id", name="uq_flowforge_steps_id_execution"),
+        UniqueConstraint("id", "workspace_id", name="uq_flowforge_steps_id_workspace"),
+        ForeignKeyConstraint(
+            ["execution_id", "workspace_id"],
+            ["flowforge_workflow_executions.id", "flowforge_workflow_executions.workspace_id"],
+            name="fk_flowforge_steps_execution_workspace",
+            ondelete="CASCADE",
+        ),
         CheckConstraint(
             "status IN ('PENDING', 'RUNNING', 'WAITING_FOR_APPROVAL', 'COMPLETED', 'FAILED', 'SKIPPED', 'CANCELLED')",
             name="ck_flowforge_steps_status",
@@ -577,6 +590,18 @@ class WorkflowApproval(Base):
     __tablename__ = "flowforge_approvals"
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["execution_id", "workspace_id"],
+            ["flowforge_workflow_executions.id", "flowforge_workflow_executions.workspace_id"],
+            name="fk_flowforge_approvals_execution_workspace",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["step_execution_id", "execution_id"],
+            ["flowforge_step_executions.id", "flowforge_step_executions.execution_id"],
+            name="fk_flowforge_approvals_step_execution",
+            ondelete="CASCADE",
+        ),
         CheckConstraint(
             "status IN ('PENDING', 'APPROVED', 'REJECTED', 'EXPIRED', 'CANCELLED')",
             name="ck_flowforge_approvals_status",
@@ -664,6 +689,12 @@ class WorkflowEvent(Base):
     __tablename__ = "flowforge_events"
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["execution_id", "workspace_id"],
+            ["flowforge_workflow_executions.id", "flowforge_workflow_executions.workspace_id"],
+            name="fk_flowforge_events_execution_workspace",
+            ondelete="CASCADE",
+        ),
         Index("ix_flowforge_events_execution_created", "execution_id", "created_at"),
         Index("ix_flowforge_events_workspace_id", "workspace_id"),
         Index("ix_flowforge_events_event_type", "event_type"),

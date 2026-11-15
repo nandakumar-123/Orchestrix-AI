@@ -478,25 +478,43 @@ erDiagram
 
 ### 5.1 Strict Tenant Isolation
 1. **Workspace Boundary**: Every entity across FlowForge and DevMemory contains a mandatory `workspace_id` foreign key referencing `workspaces(id)` with cascade deletion when a workspace is purged.
-2. **Composite Foreign Keys**: Version and trigger tables enforce composite foreign keys linking `(workflow_id, workspace_id)` back to `flowforge_workflows(id, workspace_id)`, guaranteeing that child entities cannot be assigned across disparate workspace tenants.
+2. **Composite Foreign Keys**:
+   - **`EngineeringMemory`**: Enforces `ForeignKeyConstraint(["repository_id", "workspace_id"], ["repositories.id", "repositories.workspace_id"], ondelete="CASCADE")`, guaranteeing repository-scoped memories cannot reference repositories from external workspaces.
+   - **`MemoryEvidence`**: Enforces `ForeignKeyConstraint(["memory_id", "workspace_id"], ["engineering_memories.id", "engineering_memories.workspace_id"], ondelete="CASCADE")`.
+   - **`MemoryRelationship`**: Enforces dual composite foreign keys:
+     - `ForeignKeyConstraint(["source_memory_id", "workspace_id"], ["engineering_memories.id", "engineering_memories.workspace_id"], ondelete="CASCADE")`
+     - `ForeignKeyConstraint(["target_memory_id", "workspace_id"], ["engineering_memories.id", "engineering_memories.workspace_id"], ondelete="CASCADE")`
+     This makes cross-workspace relationship links structurally impossible at the database engine level.
+   - **`MemoryAccessLog`**: Enforces `ForeignKeyConstraint(["memory_id", "workspace_id"], ["engineering_memories.id", "engineering_memories.workspace_id"], ondelete="RESTRICT")`.
+   - **`WorkflowExecution`**: Enforces `ForeignKeyConstraint(["workflow_id", "workspace_id"], ["flowforge_workflows.id", "flowforge_workflows.workspace_id"], ondelete="RESTRICT")`.
+   - **`WorkflowStepExecution`**: Enforces `ForeignKeyConstraint(["execution_id", "workspace_id"], ["flowforge_workflow_executions.id", "flowforge_workflow_executions.workspace_id"], ondelete="CASCADE")`.
+   - **`WorkflowApproval`**: Enforces `ForeignKeyConstraint(["execution_id", "workspace_id"], ["flowforge_workflow_executions.id", "flowforge_workflow_executions.workspace_id"], ondelete="CASCADE")` and `ForeignKeyConstraint(["step_execution_id", "execution_id"], ["flowforge_step_executions.id", "flowforge_step_executions.execution_id"], ondelete="CASCADE")`, preventing cross-execution step approval contamination.
+   - **`WorkflowEvent`**: Enforces `ForeignKeyConstraint(["execution_id", "workspace_id"], ["flowforge_workflow_executions.id", "flowforge_workflow_executions.workspace_id"], ondelete="CASCADE")`.
 3. **Query Scoping**: All future service queries, vector distance searches, and graph traversals must explicitly filter by `workspace_id`.
 4. **Content Hash Isolation**: Deduplication in `engineering_memories` is enforced via `UniqueConstraint("workspace_id", "content_hash")`, isolating identical snippets between different teams.
 
 ### 5.2 Audit Retention Strategy
 1. **Execution Immutability**: `flowforge_workflow_executions` enforces `ForeignKey("flowforge_workflows.id", ondelete="RESTRICT")` and `ForeignKey("flowforge_workflow_versions.id", ondelete="RESTRICT")`. Deleting a workflow definition is blocked by PostgreSQL if historical executions exist.
-2. **Version Freezing**: `flowforge_workflow_versions` entries are append-only. Edits produce new version records rather than mutating existing ones.
-3. **Observability Event Logging**: Execution timelines and human approvals are permanently recorded in `flowforge_events` and `flowforge_approvals`.
+2. **Memory Audit Retention**: `memory_access_logs` enforces `ondelete="RESTRICT"` on `memory_id` and the composite `(memory_id, workspace_id)`. Direct hard deletion of a cited or audited memory is rejected by the database. Lifecycle deprecation must be achieved via `verification_status = 'ARCHIVED'`.
+3. **Version Freezing**: `flowforge_workflow_versions` entries are append-only. Edits produce new version records rather than mutating existing ones.
+4. **Observability Event Logging**: Execution timelines and human approvals are permanently recorded in `flowforge_events` and `flowforge_approvals`.
 
-### 5.3 Vector Embeddings & Deduplication
-1. **Dimension Parity**: Standardized at `384` dimensions (`pgvector.sqlalchemy.Vector(384)`), maintaining full compatibility with the existing `FastEmbedProvider` (`BAAI/bge-small-en-v1.5`) and `MockEmbeddingProvider`.
-2. **Deduplication**: Content hashing (`SHA-256`) is computed prior to database persistence to detect identical patterns and increment importance/confidence rather than creating duplicate embedding rows.
+### 5.3 Vector Embeddings & Deduplication Architecture
+1. **Provider Reuse**: DevMemory directly reuses the unified `BaseEmbeddingProvider` and `FastEmbedProvider` (`sentence-transformers/all-MiniLM-L6-v2`) via `get_embedding_provider()`. No duplicate model weights, background inference engines, or alternate providers are introduced.
+2. **Dimension Parity**: Standardized at `384` dimensions (`pgvector.sqlalchemy.Vector(384)`), maintaining full binary and algebraic compatibility with `SemanticCodeChunk` embeddings.
+3. **Deduplication**: Content hashing (`SHA-256`) is computed prior to database persistence to detect identical patterns and increment importance/confidence rather than creating duplicate embedding rows.
 
 ---
 
 ## 6. Alembic Migration Implementation
 
-The database migration was generated under `backend/alembic/versions/f0fef3efd664_create_flowforge_and_devmemory_tables.py`:
-- **Branch Point**: Down revision is `e5f6a7b8c9d0` (Phase 13 Step 1.1 hardening).
-- **Reversibility**: Both `upgrade()` and `downgrade()` functions are fully implemented with transactional DDL.
-- **Vector Support**: `CREATE EXTENSION IF NOT EXISTS vector;` ensures zero manual setup on fresh PostgreSQL/Neon databases.
-- **Migration Status**: Verified applied to Neon PostgreSQL (`f0fef3efd664 (head)`).
+### 6.1 Initial Schema Migration (`f0fef3efd664`)
+- **Revision ID**: `f0fef3efd664`
+- **Down Revision**: `e5f6a7b8c9d0` (Phase 13 Step 1.1 hardening).
+- **Scope**: Created all 11 tables, initial indexes, pgvector extension, and base constraints.
+
+### 6.2 Tenant Integrity & Audit Hardening Migration (`c7d8e9f0a1b2`)
+- **Revision ID**: `c7d8e9f0a1b2`
+- **Down Revision**: `f0fef3efd664` (Phase 14 Step 1 foundation).
+- **Scope**: Added composite foreign keys across `engineering_memories`, `memory_evidence`, `memory_relationships`, `memory_access_logs`, `flowforge_workflow_executions`, `flowforge_step_executions`, `flowforge_approvals`, and `flowforge_events`. Hardened `memory_access_logs` with `ondelete="RESTRICT"`.
+- **Status**: Applied to live Neon PostgreSQL (`c7d8e9f0a1b2 (head)`).
