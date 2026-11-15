@@ -3,6 +3,7 @@
 import * as React from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { PageHeader } from "@/components/shared/page-header";
+import { AgentMemoryContext } from "@/components/shared/agent-memory-context";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -390,6 +391,14 @@ export default function DevPilotPage() {
             </Button>
           </div>
         </div>
+
+        {/* DevMemory Active Context */}
+        <AgentMemoryContext
+          agent="DEVPILOT"
+          query={activeTask ? activeTask.title : "Architecture conventions and technical decisions"}
+          workspaceId={selectedWorkspaceId}
+          repositoryId={selectedRepoId}
+        />
 
         {errorMessage && (
           <div className="p-4 rounded-lg bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-400 text-sm flex items-center justify-between">

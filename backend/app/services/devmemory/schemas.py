@@ -108,6 +108,15 @@ class MemoryResponse(BaseModel):
     model_config = {"from_attributes": True, "populate_by_name": True}
 
 
+class MemoryStatsResponse(BaseModel):
+    total_count: int
+    verified_count: int
+    unverified_count: int
+    outdated_count: int
+    archived_count: int
+    type_counts: dict[str, int]
+
+
 class MemorySearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
     repository_id: uuid.UUID | None = None

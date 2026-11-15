@@ -228,28 +228,23 @@ function WorkflowEditorContent() {
 
   if (isLoading) {
     return (
-      <AppShell>
-        <div className="flex items-center justify-center h-64">
-          <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
-        </div>
-      </AppShell>
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+      </div>
     );
   }
 
   if (error && !workflow) {
     return (
-      <AppShell>
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {error}
-        </div>
-      </AppShell>
+      <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        {error}
+      </div>
     );
   }
 
   return (
-    <AppShell>
-      <div className="flex flex-col h-full -m-4 sm:-m-6 lg:-m-8">
-        {/* Toolbar */}
+    <div className="flex flex-col h-full -m-4 sm:-m-6 lg:-m-8">
+      {/* Toolbar */}
         <WorkflowToolbar
           name={editedName}
           status={workflow?.status ?? "DRAFT"}
@@ -309,22 +304,23 @@ function WorkflowEditorContent() {
           </div>
         </div>
       </div>
+  );
+}
+
+function WorkflowEditorPage() {
+  return (
+    <AppShell>
+      <React.Suspense
+        fallback={
+          <div className="flex items-center justify-center h-64">
+            <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+          </div>
+        }
+      >
+        <WorkflowEditorContent />
+      </React.Suspense>
     </AppShell>
   );
 }
 
-export default function WorkflowEditorPage() {
-  return (
-    <React.Suspense
-      fallback={
-        <AppShell>
-          <div className="flex items-center justify-center h-64">
-            <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
-          </div>
-        </AppShell>
-      }
-    >
-      <WorkflowEditorContent />
-    </React.Suspense>
-  );
-}
+export default WorkflowEditorPage;

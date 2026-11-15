@@ -132,7 +132,7 @@ function WorkflowExecutionsContent() {
   };
 
   return (
-    <AppShell>
+    <>
       <PageHeader
         title={workflow ? `${workflow.name} — Executions` : "Workflow Executions"}
         subtitle={`${executions.length} execution${executions.length !== 1 ? "s" : ""}`}
@@ -238,22 +238,24 @@ function WorkflowExecutionsContent() {
           ))}
         </div>
       )}
+    </>
+  );
+}
+
+function WorkflowExecutionsPage() {
+  return (
+    <AppShell>
+      <React.Suspense
+        fallback={
+          <div className="flex items-center justify-center h-32">
+            <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
+          </div>
+        }
+      >
+        <WorkflowExecutionsContent />
+      </React.Suspense>
     </AppShell>
   );
 }
 
-export default function WorkflowExecutionsPage() {
-  return (
-    <React.Suspense
-      fallback={
-        <AppShell>
-          <div className="flex items-center justify-center h-32">
-            <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
-          </div>
-        </AppShell>
-      }
-    >
-      <WorkflowExecutionsContent />
-    </React.Suspense>
-  );
-}
+export default WorkflowExecutionsPage;

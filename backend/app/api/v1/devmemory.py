@@ -44,6 +44,7 @@ from app.services.devmemory.schemas import (
     MemoryResponse,
     MemorySearchRequest,
     MemorySearchResult,
+    MemoryStatsResponse,
     MemoryUpdateRequest,
     MemoryVerifyRequest,
 )
@@ -133,6 +134,46 @@ async def list_memories(
     res = await db.execute(stmt)
     memories = list(res.scalars().all())
     return [MemoryResponse.model_validate(m) for m in memories]
+
+
+@devmemory_router.get(
+    "/stats",
+    response_model=MemoryStatsResponse,
+    summary="Get aggregated memory statistics in workspace",
+)
+async def get_memory_stats(
+    workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
+    repository_id: uuid.UUID | None = Query(None, description="Optional repository filter"),
+    _current_user: User = Depends(get_current_user),
+    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.VIEWER)),
+    db: AsyncSession = Depends(get_db_session),
+) -> MemoryStatsResponse:
+    base_stmt = select(EngineeringMemory).where(EngineeringMemory.workspace_id == workspace_id)
+    if repository_id:
+        base_stmt = base_stmt.where(EngineeringMemory.repository_id == repository_id)
+
+    res = await db.execute(base_stmt)
+    memories = list(res.scalars().all())
+
+    total = len(memories)
+    verified = sum(1 for m in memories if m.verification_status == MemoryVerificationStatus.VERIFIED.value)
+    unverified = sum(1 for m in memories if m.verification_status == MemoryVerificationStatus.UNVERIFIED.value)
+    outdated = sum(1 for m in memories if m.verification_status == MemoryVerificationStatus.OUTDATED.value)
+    archived = sum(1 for m in memories if m.verification_status == MemoryVerificationStatus.ARCHIVED.value)
+
+    type_counts: dict[str, int] = {}
+    for m in memories:
+        t = str(m.memory_type)
+        type_counts[t] = type_counts.get(t, 0) + 1
+
+    return MemoryStatsResponse(
+        total_count=total,
+        verified_count=verified,
+        unverified_count=unverified,
+        outdated_count=outdated,
+        archived_count=archived,
+        type_counts=type_counts,
+    )
 
 
 @devmemory_router.get(

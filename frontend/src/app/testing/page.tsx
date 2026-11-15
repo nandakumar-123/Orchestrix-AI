@@ -3,6 +3,7 @@
 import * as React from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { PageHeader } from "@/components/shared/page-header";
+import { AgentMemoryContext } from "@/components/shared/agent-memory-context";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -426,6 +427,15 @@ export default function TestingPage() {
             </Button>
           </div>
         </div>
+
+        {/* DevMemory Active Context */}
+        <AgentMemoryContext
+          agent="TESTPILOT"
+          query="Testing conventions, failure edge cases, and test fixtures"
+          workspaceId={selectedWorkspaceId}
+          repositoryId={selectedRepoId}
+          title="TestPilot: Testing Conventions & Known Failures (DevMemory)"
+        />
 
         {/* Error alert banner */}
         {errorMessage && (

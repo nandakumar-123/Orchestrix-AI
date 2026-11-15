@@ -4,6 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
 import { PageHeader } from "@/components/shared/page-header";
+import { AgentMemoryContext } from "@/components/shared/agent-memory-context";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -375,6 +376,15 @@ export default function SecurityPage() {
             </Button>
           </div>
         </div>
+
+        {/* DevMemory Active Context */}
+        <AgentMemoryContext
+          agent="SECUREFLOW"
+          query="Security policies, vulnerability remediation patterns, and compliance rules"
+          workspaceId={selectedWorkspaceId}
+          repositoryId={selectedRepoId}
+          title="SecureFlow: Security Policies & Remediation Patterns (DevMemory)"
+        />
 
         {/* Error banner */}
         {errorMessage && (

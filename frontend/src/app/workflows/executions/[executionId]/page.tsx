@@ -6,6 +6,7 @@ import { useParams } from "next/navigation";
 import { ReactFlowProvider } from "@xyflow/react";
 import { AppShell } from "@/components/layout/app-shell";
 import { PageHeader } from "@/components/shared/page-header";
+import { AgentMemoryContext } from "@/components/shared/agent-memory-context";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -309,21 +310,17 @@ function ExecutionDetailContent() {
 
   if (isLoading) {
     return (
-      <AppShell>
-        <div className="flex items-center justify-center h-64">
-          <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
-        </div>
-      </AppShell>
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+      </div>
     );
   }
 
   if (error || !execution) {
     return (
-      <AppShell>
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {error ?? "Execution not found"}
-        </div>
-      </AppShell>
+      <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        {error ?? "Execution not found"}
+      </div>
     );
   }
 
@@ -332,7 +329,7 @@ function ExecutionDetailContent() {
   );
 
   return (
-    <AppShell>
+    <>
       <PageHeader
         title="Execution Detail"
         subtitle={`Workflow: ${execution.workflow_id.slice(0, 8)}…`}
@@ -373,6 +370,14 @@ function ExecutionDetailContent() {
               )}
           </div>
         }
+      />
+
+      {/* DevMemory Active Context */}
+      <AgentMemoryContext
+        agent="FLOWFORGE"
+        query={`Workflow execution ${execution.workflow_id} step coordination conventions`}
+        workspaceId={workspaceId}
+        title="FlowForge: Pipeline Execution Conventions & Decisions (DevMemory)"
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -526,22 +531,24 @@ function ExecutionDetailContent() {
           </Card>
         </div>
       </div>
+    </>
+  );
+}
+
+function ExecutionDetailPage() {
+  return (
+    <AppShell>
+      <React.Suspense
+        fallback={
+          <div className="flex items-center justify-center h-64">
+            <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+          </div>
+        }
+      >
+        <ExecutionDetailContent />
+      </React.Suspense>
     </AppShell>
   );
 }
 
-export default function ExecutionDetailPage() {
-  return (
-    <React.Suspense
-      fallback={
-        <AppShell>
-          <div className="flex items-center justify-center h-64">
-            <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
-          </div>
-        </AppShell>
-      }
-    >
-      <ExecutionDetailContent />
-    </React.Suspense>
-  );
-}
+export default ExecutionDetailPage;

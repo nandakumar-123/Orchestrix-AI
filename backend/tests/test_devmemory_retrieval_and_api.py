@@ -239,3 +239,64 @@ async def test_graph_synchronization_and_resilience(test_session: AsyncSession) 
     assert summary.synced_nodes >= 2
     assert summary.synced_relationships >= 1
     assert summary.status == "SUCCESS"
+
+
+@pytest.mark.asyncio
+async def test_memory_stats_endpoint(test_session: AsyncSession) -> None:
+    """Test get_memory_stats returns accurate counts of verified, unverified, outdated, and archived memories."""
+    from app.api.v1.devmemory import get_memory_stats
+    from app.db.base import WorkspaceRole
+    from app.db.models.membership import WorkspaceMembership
+    from app.db.models.user import User
+
+    ws = Workspace(name="WS-Stats", slug="ws-stats")
+    user = User(email="stats@orchestrix.ai", is_active=True)
+    test_session.add_all([ws, user])
+    await test_session.flush()
+
+    mem_service = DevMemoryService()
+    # Create 1 unverified
+    await mem_service.create_memory(
+        test_session,
+        ws.id,
+        MemoryCreateRequest(
+            memory_type=MemoryType.ARCHITECTURE_DECISION,
+            title="Arch 1",
+            content="Architecture decision description",
+        ),
+    )
+    # Create 1 and verify it
+    m2 = await mem_service.create_memory(
+        test_session,
+        ws.id,
+        MemoryCreateRequest(
+            memory_type=MemoryType.ENGINEERING_CONVENTION,
+            title="Convention 1",
+            content="Convention description",
+        ),
+    )
+    await mem_service.verify_memory(
+        test_session,
+        ws.id,
+        m2.id,
+        evidence=MemoryEvidenceCreateRequest(
+            evidence_type=EvidenceType.CODE_REFERENCE,
+            evidence_content="Verified in file app/core.py",
+        ),
+    )
+    await test_session.commit()
+
+    stats = await get_memory_stats(
+        workspace_id=ws.id,
+        repository_id=None,
+        _current_user=user,
+        _membership=WorkspaceMembership(workspace_id=ws.id, user_id=user.id, role=WorkspaceRole.VIEWER),
+        db=test_session,
+    )
+    assert stats.total_count == 2
+    assert stats.verified_count == 1
+    assert stats.unverified_count == 1
+    assert stats.outdated_count == 0
+    assert stats.archived_count == 0
+    assert stats.type_counts[MemoryType.ARCHITECTURE_DECISION.value] == 1
+    assert stats.type_counts[MemoryType.ENGINEERING_CONVENTION.value] == 1

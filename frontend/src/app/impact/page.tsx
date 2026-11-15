@@ -3,6 +3,7 @@
 import * as React from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { PageHeader } from "@/components/shared/page-header";
+import { AgentMemoryContext } from "@/components/shared/agent-memory-context";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -299,6 +300,15 @@ export default function ImpactPage() {
             </Button>
           </div>
         }
+      />
+
+      {/* DevMemory Active Context */}
+      <AgentMemoryContext
+        agent="IMPACTMIND"
+        query={targetCommitSha ? `Change impact and constraints for commit ${targetCommitSha}` : "Breaking changes and architectural constraints"}
+        workspaceId={selectedWorkspaceId}
+        repositoryId={selectedRepoId}
+        title="ImpactMind: Architectural Constraints & Past Discoveries (DevMemory)"
       />
 
       {errorMessage && (

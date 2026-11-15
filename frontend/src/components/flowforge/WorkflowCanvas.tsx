@@ -25,7 +25,6 @@ import {
 import { type WorkflowNodeType } from "@/lib/flowforge-api";
 
 // Custom node registration with loose typing for compatibility with ReactFlow NodeTypes
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const nodeTypes: NodeTypes = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   workflowNode: WorkflowCustomNode as any,
