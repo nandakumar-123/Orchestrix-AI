@@ -10,6 +10,17 @@ from app.db.base import (
 )
 from app.db.models.audit_log import AuditLog
 from app.db.models.auth_session import AuthSession
+from app.db.models.devpilot import (
+    CodeChange,
+    CodeGenerationResult,
+    CodeReviewFinding,
+    DevPilotApproval,
+    DevPilotEvent,
+    DevPilotTask,
+    DevPilotValidationRun,
+    EngineeringPlan,
+    EngineeringPlanStep,
+)
 from app.db.models.engineering_task import EngineeringTask
 from app.db.models.github_account import GitHubAccount
 from app.db.models.github_installation import GitHubInstallation
@@ -76,4 +87,13 @@ __all__ = [
     "ImpactedEntity",
     "TestRecommendation",
     "TestExecutionRun",
+    "DevPilotTask",
+    "EngineeringPlan",
+    "EngineeringPlanStep",
+    "CodeGenerationResult",
+    "CodeChange",
+    "CodeReviewFinding",
+    "DevPilotValidationRun",
+    "DevPilotApproval",
+    "DevPilotEvent",
 ]

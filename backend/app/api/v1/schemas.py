@@ -837,3 +837,173 @@ class CancelTestsRequest(BaseModel):
     """Request to cancel ongoing test execution."""
 
     execution_id: uuid.UUID
+
+
+# -----------------------------------------------------------------------------
+# DevPilot Autonomous AI Software Engineer Schemas
+# -----------------------------------------------------------------------------
+
+
+class DevPilotTaskCreateRequest(BaseModel):
+    """Request to initialize an autonomous DevPilot engineering task."""
+
+    title: str = Field(..., min_length=3, max_length=512, description="Concise task title")
+    prompt: str = Field(..., min_length=5, description="Natural language engineering instructions")
+    task_type: str = Field(
+        default="FEATURE",
+        description="FEATURE | BUGFIX | REFACTOR | TESTS | API | PERFORMANCE | DOCS",
+    )
+    base_commit_sha: str | None = Field(default=None, description="Optional base commit SHA")
+
+
+class DevPilotPlanStepItem(BaseModel):
+    """Granular action item in an engineering plan."""
+
+    step_number: int
+    title: str
+    description: str
+    target_files: list[str] = []
+    affected_symbols: list[str] = []
+    action_type: str
+    reason: str
+    risk_level: str
+    status: str = "PLANNED"
+
+
+class DevPilotPlanResponse(BaseModel):
+    """Structured 14-section engineering plan produced by DevPilot."""
+
+    id: uuid.UUID
+    task_id: uuid.UUID
+    workspace_id: uuid.UUID
+    summary: str
+    task_understanding: str
+    existing_implementation_analysis: str
+    security_implications: str
+    exposure_score: float
+    exposure_tier: str
+    status: str
+    approval_comment: str | None = None
+    steps: list[DevPilotPlanStepItem] = []
+    created_at: datetime
+    approved_at: datetime | None = None
+
+
+class DevPilotApprovePlanRequest(BaseModel):
+    """Human approval decision for an implementation plan."""
+
+    decision: str = Field(..., description="APPROVED | REJECTED")
+    feedback: str | None = Field(
+        default=None, description="Optional user comment or rejection feedback"
+    )
+
+
+class DevPilotCodeChangeItem(BaseModel):
+    """Individual file modification."""
+
+    id: uuid.UUID
+    file_path: str
+    change_type: str
+    old_content: str | None = None
+    new_content: str | None = None
+    diff_hunk: str | None = None
+
+
+class DevPilotDiffResponse(BaseModel):
+    """Generated code changes and unified diff."""
+
+    task_id: uuid.UUID
+    total_files_changed: int
+    unified_diff: str
+    changes: list[DevPilotCodeChangeItem] = []
+    provider_used: str
+    model_used: str
+
+
+class DevPilotReviewFindingItem(BaseModel):
+    """Automated code review observation."""
+
+    id: uuid.UUID
+    file_path: str
+    line_start: int | None = None
+    line_end: int | None = None
+    severity: str
+    category: str
+    description: str
+    evidence: str | None = None
+    suggested_correction: str | None = None
+
+
+class DevPilotReviewResponse(BaseModel):
+    """Collection of code review findings."""
+
+    task_id: uuid.UUID
+    findings: list[DevPilotReviewFindingItem] = []
+    total_findings: int
+
+
+class DevPilotValidationRunItem(BaseModel):
+    """Validation stage execution log."""
+
+    id: uuid.UUID
+    stage: str
+    command: str
+    status: str
+    exit_code: int | None = None
+    stdout: str | None = None
+    stderr: str | None = None
+    duration_ms: int
+    created_at: datetime
+
+
+class DevPilotValidateRequest(BaseModel):
+    """Request to trigger validation stages."""
+
+    run_approved: bool = Field(default=False, description="Explicit user approval for test runner")
+    test_command: str | None = Field(default=None, description="Optional custom test command")
+
+
+class DevPilotApproveChangesRequest(BaseModel):
+    """Human approval decision for proposed code modifications."""
+
+    decision: str = Field(..., description="APPROVED | REJECTED")
+    feedback: str | None = Field(default=None, description="Optional feedback")
+
+
+class DevPilotEventItem(BaseModel):
+    """Lifecycle event log item."""
+
+    id: uuid.UUID
+    event_type: str
+    message: str
+    details: dict[str, Any] | None = None
+    created_at: datetime
+
+
+class DevPilotTaskResponse(BaseModel):
+    """Comprehensive DevPilot Task detail response."""
+
+    id: uuid.UUID
+    workspace_id: uuid.UUID
+    repository_id: uuid.UUID
+    created_by: uuid.UUID | None = None
+    title: str
+    prompt: str
+    task_type: str
+    status: str
+    base_commit_sha: str | None = None
+    target_commit_sha: str | None = None
+    error_message: str | None = None
+    clarification_prompt: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None = None
+    latest_plan: DevPilotPlanResponse | None = None
+    events: list[DevPilotEventItem] = []
+
+
+class DevPilotTaskListResponse(BaseModel):
+    """List of engineering tasks."""
+
+    tasks: list[DevPilotTaskResponse]
+    total: int

@@ -21,6 +21,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FolderGit2,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -46,6 +47,7 @@ const NAVIGATION_GROUPS: NavGroup[] = [
   {
     group: "ENGINEERING",
     items: [
+      { title: "DevPilot (AI Engineer)", href: "/devpilot", icon: Sparkles, badge: "Phase 12" },
       { title: "Repositories", href: "/repositories", icon: GitBranch },
       { title: "AI Agents", href: "/agents", icon: Bot, badge: "6 Active" },
       { title: "Tasks & Tickets", href: "/tasks", icon: CheckSquare },
