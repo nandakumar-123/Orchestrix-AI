@@ -695,4 +695,147 @@ class IntelligenceSearchRequest(BaseModel):
     symbol_type: str | None = None
     file_path_prefix: str | None = None
     limit: int = Field(default=15, ge=1, le=50)
+    top_k: int = Field(default=10, ge=1, le=50)
     include_graph_enrichment: bool = True
+
+
+
+# =============================================================================
+# ImpactMind Schemas (Phase 11)
+# =============================================================================
+
+
+class ImpactAnalyzeRequest(BaseModel):
+    """Request to analyze code changes and compute blast radius & regression tests."""
+
+    diff_text: str | None = Field(default=None, description="Raw unified diff text to inspect")
+    base_commit_sha: str | None = Field(default=None, description="Base commit SHA")
+    target_commit_sha: str | None = Field(default=None, description="Target/head commit SHA")
+    comparison_mode: str = Field(
+        default="diff_input",
+        description="Mode: diff_input | commit_range | working_tree",
+    )
+    snapshot_id: uuid.UUID | None = Field(
+        default=None, description="Target snapshot to evaluate against"
+    )
+    file_contents_before: dict[str, str] | None = Field(
+        default=None, description="Optional map of file paths to before-change source text"
+    )
+    file_contents_after: dict[str, str] | None = Field(
+        default=None, description="Optional map of file paths to after-change source text"
+    )
+
+
+class ChangeClassificationItem(BaseModel):
+    """Classified code modification."""
+
+    id: uuid.UUID
+    file_path: str
+    symbol_name: str | None = None
+    symbol_id: str | None = None
+    category: str
+    is_breaking: bool = False
+    breaking_reason: str | None = None
+    confidence: float = 1.0
+    evidence: str | None = None
+    status: str = "resolved"
+
+
+class ImpactedEntityItem(BaseModel):
+    """Downstream affected graph entity."""
+
+    id: uuid.UUID
+    entity_id: str
+    name: str
+    label: str
+    file_path: str | None = None
+    impact_type: str
+    depth: int = 1
+    relationship_type: str | None = None
+    confidence: float = 1.0
+    evidence: str | None = None
+
+
+class TestRecommendationItem(BaseModel):
+    """Ranked regression test case recommended for execution."""
+
+    id: uuid.UUID
+    test_file: str
+    test_name: str | None = None
+    test_framework: str = "pytest"
+    priority: str = "MEDIUM"  # CRITICAL | HIGH | MEDIUM | LOW
+    reason: str
+    related_symbol: str | None = None
+    evidence_source: str
+    confidence: float = 1.0
+
+
+class TestExecutionRunItem(BaseModel):
+    """Execution run of approved regression tests."""
+
+    id: uuid.UUID
+    command: str
+    status: str  # PENDING | RUNNING | PASSED | FAILED | TIMED_OUT | CANCELLED | SKIPPED
+    exit_code: int | None = None
+    stdout: str | None = None
+    stderr: str | None = None
+    passed_count: int = 0
+    failed_count: int = 0
+    skipped_count: int = 0
+    duration_ms: int | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class ImpactAssessmentResponse(BaseModel):
+    """Comprehensive ImpactMind Change Impact Assessment Report."""
+
+    id: uuid.UUID
+    workspace_id: uuid.UUID
+    repository_id: uuid.UUID
+    snapshot_id: uuid.UUID | None = None
+    base_commit_sha: str | None = None
+    target_commit_sha: str | None = None
+    comparison_mode: str
+    status: str
+    structural_exposure_score: float = Field(
+        ..., description="Blast Radius & Structural Exposure Score (0.0 to 100.0, heuristic)"
+    )
+    exposure_tier: str = Field(..., description="Exposure tier: LOW | MEDIUM | HIGH | CRITICAL")
+    score_type: str = "heuristic_structural_exposure"
+    score_label: str = "Blast Radius & Structural Exposure Score"
+    change_summary: dict[str, Any]
+    reasons: list[str]
+    recommended_actions: list[str]
+    error_message: str | None = None
+    classifications: list[ChangeClassificationItem] = []
+    impacted_entities: list[ImpactedEntityItem] = []
+    test_recommendations: list[TestRecommendationItem] = []
+    test_executions: list[TestExecutionRunItem] = []
+    created_at: datetime
+    completed_at: datetime | None = None
+
+
+class ImpactAssessmentListResponse(BaseModel):
+    """List of historical impact assessments."""
+
+    assessments: list[ImpactAssessmentResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class RunTestsRequest(BaseModel):
+    """Request to execute approved regression tests in controlled environment."""
+
+    run_approved: bool = Field(..., description="Explicit user approval to execute tests")
+    working_dir: str | None = Field(default=None, description="Controlled working directory")
+    custom_command: str | None = Field(default=None, description="Optional custom command")
+    timeout_seconds: float = Field(default=60.0, ge=5.0, le=300.0)
+
+
+class CancelTestsRequest(BaseModel):
+    """Request to cancel ongoing test execution."""
+
+    execution_id: uuid.UUID
+
