@@ -88,11 +88,17 @@ class SecureFlowScan(Base):
     __tablename__ = "secureflow_scans"
 
     __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "repository_id",
+            "workspace_id",
+            name="uq_secureflow_scans_id_repo_workspace",
+        ),
         ForeignKeyConstraint(
             ["repository_id", "workspace_id"],
             ["repositories.id", "repositories.workspace_id"],
             name="fk_secureflow_scans_repo_workspace",
-            ondelete="CASCADE",
+            ondelete="RESTRICT",
         ),
         CheckConstraint(
             "status IN ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED', 'PARTIALLY_COMPLETED')",
@@ -138,7 +144,7 @@ class SecureFlowScan(Base):
     )
     repository_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("repositories.id", ondelete="CASCADE"),
+        ForeignKey("repositories.id", ondelete="RESTRICT"),
         nullable=False,
     )
     snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -212,16 +218,18 @@ class SecureFlowScan(Base):
 
     findings: Mapped[list[SecureFlowFinding]] = relationship(
         "SecureFlowFinding",
+        foreign_keys="SecureFlowFinding.scan_id",
         back_populates="scan",
-        cascade="all, delete-orphan",
         order_by="SecureFlowFinding.created_at.desc()",
+        passive_deletes=True,
+        overlaps="scan,workspace,repository",
         lazy="selectin",
     )
     events: Mapped[list[SecureFlowScanEvent]] = relationship(
         "SecureFlowScanEvent",
         back_populates="scan",
-        cascade="all, delete-orphan",
         order_by="SecureFlowScanEvent.created_at.asc()",
+        passive_deletes=True,
         lazy="selectin",
     )
 
@@ -242,6 +250,26 @@ class SecureFlowFinding(Base):
             ["repositories.id", "repositories.workspace_id"],
             name="fk_secureflow_findings_repo_workspace",
             ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["scan_id", "repository_id", "workspace_id"],
+            [
+                "secureflow_scans.id",
+                "secureflow_scans.repository_id",
+                "secureflow_scans.workspace_id",
+            ],
+            name="fk_secureflow_findings_scan_tenant",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["devpilot_task_id", "repository_id"],
+            ["devpilot_tasks.id", "devpilot_tasks.repository_id"],
+            name="fk_secureflow_findings_task_repo",
+        ),
+        ForeignKeyConstraint(
+            ["devpilot_task_id", "workspace_id"],
+            ["devpilot_tasks.id", "devpilot_tasks.workspace_id"],
+            name="fk_secureflow_findings_task_workspace",
         ),
         UniqueConstraint(
             "repository_id",
@@ -294,12 +322,12 @@ class SecureFlowFinding(Base):
     )
     repository_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("repositories.id", ondelete="CASCADE"),
+        ForeignKey("repositories.id", ondelete="RESTRICT"),
         nullable=False,
     )
     scan_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("secureflow_scans.id", ondelete="CASCADE"),
+        ForeignKey("secureflow_scans.id", ondelete="RESTRICT"),
         nullable=False,
     )
     scanner: Mapped[str] = mapped_column(
@@ -395,10 +423,18 @@ class SecureFlowFinding(Base):
     )
     scan: Mapped[SecureFlowScan] = relationship(
         "SecureFlowScan",
+        foreign_keys=[scan_id],
         back_populates="findings",
+        overlaps="findings,workspace,repository",
         lazy="selectin",
     )
-    devpilot_task: Mapped[DevPilotTask | None] = relationship("DevPilotTask", lazy="selectin")
+    devpilot_task: Mapped[DevPilotTask | None] = relationship(
+        "DevPilotTask",
+        foreign_keys=[devpilot_task_id, workspace_id],
+        primaryjoin="and_(SecureFlowFinding.devpilot_task_id == DevPilotTask.id, SecureFlowFinding.workspace_id == DevPilotTask.workspace_id)",
+        overlaps="workspace",
+        lazy="selectin",
+    )
 
     @staticmethod
     def compute_fingerprint(
@@ -441,7 +477,7 @@ class SecureFlowScanEvent(Base):
     )
     scan_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("secureflow_scans.id", ondelete="CASCADE"),
+        ForeignKey("secureflow_scans.id", ondelete="RESTRICT"),
         nullable=False,
     )
     event_type: Mapped[str] = mapped_column(

@@ -16,6 +16,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     Uuid,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -111,6 +112,12 @@ class TestPilotSuite(Base):
     __tablename__ = "testpilot_suites"
 
     __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "repository_id",
+            "workspace_id",
+            name="uq_testpilot_suites_id_repo_workspace",
+        ),
         ForeignKeyConstraint(
             ["repository_id", "workspace_id"],
             ["repositories.id", "repositories.workspace_id"],
@@ -207,8 +214,10 @@ class TestPilotSuite(Base):
     )
     executions: Mapped[list[TestPilotExecution]] = relationship(
         "TestPilotExecution",
+        foreign_keys="TestPilotExecution.suite_id",
         back_populates="suite",
         order_by="TestPilotExecution.created_at.desc()",
+        overlaps="suite,workspace,repository",
         lazy="selectin",
     )
 
@@ -307,6 +316,15 @@ class TestPilotExecution(Base):
             ["repositories.id", "repositories.workspace_id"],
             name="fk_testpilot_executions_repo_workspace",
             ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["suite_id", "repository_id", "workspace_id"],
+            [
+                "testpilot_suites.id",
+                "testpilot_suites.repository_id",
+                "testpilot_suites.workspace_id",
+            ],
+            name="fk_testpilot_executions_suite_tenant",
         ),
         CheckConstraint(
             "status IN ('PENDING', 'RUNNING', 'PASSED', 'FAILED', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'BLOCKED')",
@@ -414,14 +432,22 @@ class TestPilotExecution(Base):
 
     # Relationships
     workspace: Mapped[Workspace] = relationship(
-        "Workspace", foreign_keys=[workspace_id], lazy="selectin"
+        "Workspace",
+        foreign_keys=[workspace_id],
+        overlaps="executions,suite",
+        lazy="selectin",
     )
     repository: Mapped[Repository] = relationship(
-        "Repository", foreign_keys=[repository_id], lazy="selectin"
+        "Repository",
+        foreign_keys=[repository_id],
+        overlaps="executions,suite",
+        lazy="selectin",
     )
     suite: Mapped[TestPilotSuite | None] = relationship(
         "TestPilotSuite",
+        foreign_keys=[suite_id],
         back_populates="executions",
+        overlaps="executions,workspace,repository",
         lazy="selectin",
     )
     results: Mapped[list[TestPilotResult]] = relationship(

@@ -12,6 +12,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     Uuid,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -37,6 +38,8 @@ class DevPilotTask(Base):
     __tablename__ = "devpilot_tasks"
 
     __table_args__ = (
+        UniqueConstraint("id", "workspace_id", name="uq_devpilot_tasks_id_workspace"),
+        UniqueConstraint("id", "repository_id", name="uq_devpilot_tasks_id_repo"),
         Index("ix_devpilot_tasks_workspace_id", "workspace_id"),
         Index("ix_devpilot_tasks_repository_id", "repository_id"),
         Index("ix_devpilot_tasks_status", "status"),
