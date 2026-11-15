@@ -10,6 +10,19 @@ from app.db.base import (
 )
 from app.db.models.audit_log import AuditLog
 from app.db.models.auth_session import AuthSession
+from app.db.models.devmemory import (
+    EngineeringMemory,
+    EvidenceType,
+    MemoryAccessLog,
+    MemoryAccessType,
+    MemoryConsumerAgent,
+    MemoryEvidence,
+    MemoryRelationship,
+    MemoryRelationshipType,
+    MemorySourceType,
+    MemoryType,
+    MemoryVerificationStatus,
+)
 from app.db.models.devpilot import (
     CodeChange,
     CodeGenerationResult,
@@ -22,6 +35,21 @@ from app.db.models.devpilot import (
     EngineeringPlanStep,
 )
 from app.db.models.engineering_task import EngineeringTask
+from app.db.models.flowforge import (
+    WorkflowApproval,
+    WorkflowApprovalStatus,
+    WorkflowDefinition,
+    WorkflowEvent,
+    WorkflowEventType,
+    WorkflowExecution,
+    WorkflowExecutionStatus,
+    WorkflowStatus,
+    WorkflowStepExecution,
+    WorkflowStepStatus,
+    WorkflowTrigger,
+    WorkflowTriggerType,
+    WorkflowVersion,
+)
 from app.db.models.github_account import GitHubAccount
 from app.db.models.github_installation import GitHubInstallation
 from app.db.models.github_oauth_transaction import GitHubOAuthTransaction
@@ -136,4 +164,28 @@ __all__ = [
     "FindingSeverity",
     "FindingStatus",
     "ScanEventType",
+    "WorkflowDefinition",
+    "WorkflowVersion",
+    "WorkflowTrigger",
+    "WorkflowExecution",
+    "WorkflowStepExecution",
+    "WorkflowApproval",
+    "WorkflowEvent",
+    "WorkflowStatus",
+    "WorkflowTriggerType",
+    "WorkflowExecutionStatus",
+    "WorkflowStepStatus",
+    "WorkflowApprovalStatus",
+    "WorkflowEventType",
+    "EngineeringMemory",
+    "MemoryEvidence",
+    "MemoryRelationship",
+    "MemoryAccessLog",
+    "MemoryType",
+    "MemorySourceType",
+    "MemoryVerificationStatus",
+    "EvidenceType",
+    "MemoryRelationshipType",
+    "MemoryConsumerAgent",
+    "MemoryAccessType",
 ]
