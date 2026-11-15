@@ -572,7 +572,7 @@ async def approve_workflow_checkpoint(
     payload: WorkflowApprovalDecisionRequest,
     workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
     current_user: User = Depends(get_current_user),
-    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.MEMBER)),
+    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.ADMIN)),
     db: AsyncSession = Depends(get_db_session),
 ) -> WorkflowApprovalResponse:
     try:
@@ -582,6 +582,7 @@ async def approve_workflow_checkpoint(
             workspace_id=workspace_id,
             user_id=current_user.id,
             decision_reason=payload.decision_reason,
+            enforce_separation_of_duties=True,
         )
         await db.commit()
 
@@ -614,7 +615,7 @@ async def reject_workflow_checkpoint(
     payload: WorkflowApprovalDecisionRequest,
     workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
     current_user: User = Depends(get_current_user),
-    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.MEMBER)),
+    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.ADMIN)),
     db: AsyncSession = Depends(get_db_session),
 ) -> WorkflowApprovalResponse:
     try:
@@ -624,6 +625,7 @@ async def reject_workflow_checkpoint(
             workspace_id=workspace_id,
             user_id=current_user.id,
             decision_reason=payload.decision_reason,
+            enforce_separation_of_duties=True,
         )
         await db.commit()
 

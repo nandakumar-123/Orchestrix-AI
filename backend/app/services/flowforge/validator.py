@@ -162,11 +162,47 @@ class WorkflowValidator:
                 )
                 config = {}
 
+            retry_limit = n.get("retry_limit", 0)
+            if not isinstance(retry_limit, int) or retry_limit < 0 or retry_limit > 5:
+                issues.append(
+                    WorkflowValidationIssue(
+                        code="INVALID_RETRY_LIMIT",
+                        message=f"Node '{node_id}' retry_limit must be an integer between 0 and 5.",
+                        node_id=node_id,
+                    )
+                )
+                retry_limit = 0
+
+            retry_delay = n.get("retry_delay_seconds", 0)
+            if not isinstance(retry_delay, int) or retry_delay < 0 or retry_delay > 3600:
+                issues.append(
+                    WorkflowValidationIssue(
+                        code="INVALID_RETRY_DELAY",
+                        message=f"Node '{node_id}' retry_delay_seconds must be an integer between 0 and 3600.",
+                        node_id=node_id,
+                    )
+                )
+                retry_delay = 0
+
+            timeout = n.get("timeout_seconds", 300)
+            if not isinstance(timeout, int) or timeout < 1 or timeout > 86400:
+                issues.append(
+                    WorkflowValidationIssue(
+                        code="INVALID_TIMEOUT",
+                        message=f"Node '{node_id}' timeout_seconds must be an integer between 1 and 86400.",
+                        node_id=node_id,
+                    )
+                )
+                timeout = 300
+
             node_def = WorkflowNodeDefinition(
                 id=node_id,
                 name=n.get("name"),
                 node_type=WorkflowNodeType(node_type_raw),
                 config=config,
+                retry_limit=retry_limit,
+                retry_delay_seconds=retry_delay,
+                timeout_seconds=timeout,
             )
             node_map[node_id] = node_def
 

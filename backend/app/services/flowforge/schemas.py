@@ -52,6 +52,9 @@ class WorkflowNodeDefinition(BaseModel):
     name: str | None = None
     node_type: WorkflowNodeType
     config: dict[str, Any] = Field(default_factory=dict)
+    retry_limit: int = Field(default=0, ge=0, le=5)
+    retry_delay_seconds: int = Field(default=0, ge=0, le=3600)
+    timeout_seconds: int = Field(default=300, ge=1, le=86400)
 
 
 class WorkflowGraphDefinition(BaseModel):

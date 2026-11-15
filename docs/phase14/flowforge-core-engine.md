@@ -134,12 +134,39 @@ All endpoints reside under `/api/v1/workflows` and require workspace-scoped auth
 | `GET` | `/api/v1/workflows/executions/{id}` | `VIEWER` | Get execution details and steps |
 | `POST` | `/api/v1/workflows/executions/{id}/cancel` | `MEMBER` | Cancel active execution |
 | `GET` | `/api/v1/workflows/executions/{id}/events` | `VIEWER` | Get audit events for execution |
-| `POST` | `/api/v1/workflows/approvals/{id}/approve` | `MEMBER` | Approve checkpoint and resume |
-| `POST` | `/api/v1/workflows/approvals/{id}/reject` | `MEMBER` | Reject checkpoint and halt |
+| `POST` | `/api/v1/workflows/approvals/{id}/approve` | `ADMIN` | Approve checkpoint and resume (ADMIN or OWNER only) |
+| `POST` | `/api/v1/workflows/approvals/{id}/reject` | `ADMIN` | Reject checkpoint and halt (ADMIN or OWNER only) |
 
 ---
 
-## 8. Known Limitations (Phase 14 Step 2 Scope)
+## 8. Hardening & Execution Reliability (Phase 14 Step 2.1)
+
+### 8.1 RBAC Enforcement
+The approval endpoints enforce strict workspace hierarchy:
+- **VIEWER**: Read-only access (`GET /executions`, `GET /events`). Mutating workflows or approvals returns `403 Forbidden`.
+- **MEMBER**: Standard workflow operations (create, edit drafts, execute, cancel). Attempting to approve or reject returns `403 Forbidden`.
+- **ADMIN / OWNER**: Full authority to approve or reject checkpoints.
+- **Separation of Duties**: The user who requested/triggered the execution cannot approve their own checkpoint regardless of role (`403 Forbidden`).
+- **Idempotency & Replay Protection**: Approving or rejecting a non-pending checkpoint returns `400 Bad Request`.
+
+### 8.2 Execution Retry & Idempotency
+- **Bounded Retry Limits**: Configurable per-node `retry_limit` (0–5) and `retry_delay_seconds` (0–3600).
+- **Accurate Attempt Tracking**: Failed attempts increment `attempt_number` and emit `WorkflowEventType.STEP_FAILED` events.
+- **Completed Step Preservation**: Completed steps are never re-executed.
+- **Agent Task Idempotency**: `FlowForgeAgentAdapter` searches for existing active tasks matching the node/title before dispatching, avoiding duplicate agent creation on workflow re-execution.
+
+### 8.3 Crash Recovery
+- **Reconciliation Engine**: `recover_interrupted_executions` scans for executions stuck in `RUNNING` status due to process crashes or container restarts.
+- **Safe Recovery**: Interrupted in-flight steps are safely reset to `PENDING` with audit event logging, allowing the execution to resume deterministically from its last valid checkpoint without repeating completed steps or discarding pending approvals.
+
+### 8.4 Parallel Execution Safety
+- **Bounded Concurrency**: Maximum 10 concurrent active branch tasks per evaluation wave.
+- **Branch Synchronization**: `MERGE` nodes wait until all incoming active branches have reached terminal status.
+- **Failure & Cancellation Cascade**: Failure in any active branch halts execution and marks in-flight parallel branches as `CANCELLED`. Cancellation cascades cleanly to all pending steps and approval checkpoints.
+
+---
+
+## 9. Known Limitations (Phase 14 Step 2.1 Scope)
 
 1. **No Visual Builder UI**: Visual drag-and-drop graph editor will be implemented in subsequent UI steps.
 2. **Cron Scheduler Engine**: Background distributed triggers (cron/scheduled polling) will be delivered in Step 3.

@@ -155,9 +155,20 @@ class WorkflowApprovalService:
         workspace_id: uuid.UUID,
         user_id: uuid.UUID,
         decision_reason: str | None = None,
+        enforce_separation_of_duties: bool = False,
     ) -> WorkflowApproval:
         """Reject a pending approval checkpoint, halting or failing the workflow branch."""
         approval = await self._get_pending_approval(db, approval_id, workspace_id)
+
+        # Separation of duties check
+        if (
+            enforce_separation_of_duties
+            and approval.requested_by
+            and approval.requested_by == user_id
+        ):
+            raise UnauthorizedApprovalError(
+                "Separation of duties: Requester cannot reject their own request."
+            )
 
         approval.status = WorkflowApprovalStatus.REJECTED
         approval.approved_by = user_id

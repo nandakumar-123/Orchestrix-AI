@@ -274,6 +274,84 @@ class FlowForgeExecutionEngine:
         await db.flush()
         return execution
 
+    async def recover_interrupted_executions(
+        self,
+        db: AsyncSession,
+        workspace_id: uuid.UUID | None = None,
+    ) -> list[WorkflowExecution]:
+        """
+        Scan for executions left in RUNNING status (e.g. from a backend process crash/restart).
+        Safely reconciles interrupted step executions and resumes eligible workflows.
+        - Identifies incomplete node executions (RUNNING -> FAILED or resume).
+        - Completed steps remain preserved and are not re-executed.
+        - Unsafe side effects are not blindly restarted.
+        - Preserves pending approval state.
+        - Emits EXECUTION_STARTED/RECOVERED audit events.
+        """
+        stmt = (
+            select(WorkflowExecution)
+            .where(WorkflowExecution.status == WorkflowExecutionStatus.RUNNING)
+            .options(
+                selectinload(WorkflowExecution.version),
+                selectinload(WorkflowExecution.steps),
+                selectinload(WorkflowExecution.approvals),
+            )
+        )
+        if workspace_id:
+            stmt = stmt.where(WorkflowExecution.workspace_id == workspace_id)
+
+        res = await db.execute(stmt)
+        interrupted = list(res.scalars().all())
+        recovered_list: list[WorkflowExecution] = []
+
+        for execution in interrupted:
+            logger.info(f"Recovering interrupted workflow execution {execution.id}")
+
+            # Reconcile any in-flight steps that were marked RUNNING during crash
+            for step in execution.steps:
+                if step.status == WorkflowStepStatus.RUNNING:
+                    # Mark interrupted attempt
+                    step.status = WorkflowStepStatus.FAILED
+                    step.completed_at = utc_now()
+                    step.error_summary = "Step interrupted by process restart"
+                    db.add(
+                        WorkflowEvent(
+                            execution_id=execution.id,
+                            workspace_id=execution.workspace_id,
+                            event_type=WorkflowEventType.STEP_FAILED,
+                            payload_json={
+                                "node_id": step.node_id,
+                                "reason": "Interrupted by backend crash/restart",
+                            },
+                            created_at=utc_now(),
+                        )
+                    )
+
+            db.add(
+                WorkflowEvent(
+                    execution_id=execution.id,
+                    workspace_id=execution.workspace_id,
+                    event_type=WorkflowEventType.EXECUTION_STARTED,
+                    payload_json={"recovery": True, "resumed_at": str(utc_now())},
+                    created_at=utc_now(),
+                )
+            )
+            await db.flush()
+
+            # Resume progress using the immutable version snapshot
+            if execution.version and execution.version.workflow_definition_json:
+                await self._progress_execution(
+                    db, execution, execution.version.workflow_definition_json
+                )
+                recovered_list.append(execution)
+            else:
+                execution.status = WorkflowExecutionStatus.FAILED
+                execution.completed_at = utc_now()
+                execution.error_summary = "Unrecoverable: missing workflow version definition."
+                await db.flush()
+
+        return recovered_list
+
     async def _progress_execution(
         self,
         db: AsyncSession,
@@ -404,6 +482,16 @@ class FlowForgeExecutionEngine:
                     execution.status = WorkflowExecutionStatus.FAILED
                     execution.completed_at = utc_now()
                     execution.error_summary = f"Execution failed at node '{failed_steps[0].node_id}': {failed_steps[0].error_summary}"
+                    # Cancel any other remaining incomplete steps
+                    for remaining_step in steps_by_node.values():
+                        if remaining_step.status in {
+                            WorkflowStepStatus.PENDING,
+                            WorkflowStepStatus.RUNNING,
+                            WorkflowStepStatus.WAITING_FOR_APPROVAL,
+                        }:
+                            remaining_step.status = WorkflowStepStatus.CANCELLED
+                            remaining_step.completed_at = utc_now()
+
                     db.add(
                         WorkflowEvent(
                             execution_id=execution.id,
@@ -449,28 +537,42 @@ class FlowForgeExecutionEngine:
                 await db.flush()
                 return
 
-            # Execute ready nodes deterministically sorted by node_id
-            for node_id in sorted(ready_node_ids):
+            # Execute ready nodes deterministically sorted by node_id with bounded concurrency (max 10 parallel tasks per wave)
+            MAX_BRANCH_CONCURRENCY = 10
+            for node_id in sorted(ready_node_ids)[:MAX_BRANCH_CONCURRENCY]:
                 node_data = node_map[node_id]
                 node_type = node_data.get("node_type")
                 node_config = node_data.get("config", {})
+                retry_limit = int(node_data.get("retry_limit", 0))
 
-                # Create step execution record
-                step = WorkflowStepExecution(
-                    execution_id=execution.id,
-                    workspace_id=execution.workspace_id,
-                    node_id=node_id,
-                    node_name=node_data.get("name"),
-                    agent_type=node_type,
-                    status=WorkflowStepStatus.RUNNING,
-                    input_reference=node_config,
-                    attempt_number=1,
-                    started_at=utc_now(),
-                    created_at=utc_now(),
-                )
-                db.add(step)
+                # Check if an existing step execution exists (e.g. from crash recovery or prior attempt)
+                step = steps_by_node.get(node_id)
+                current_attempt = 1
+                if step:
+                    if step.status == WorkflowStepStatus.COMPLETED:
+                        continue  # Already completed; do not rerun
+                    current_attempt = step.attempt_number + 1
+                    step.attempt_number = current_attempt
+                    step.status = WorkflowStepStatus.RUNNING
+                    step.started_at = utc_now()
+                    step.error_summary = None
+                else:
+                    step = WorkflowStepExecution(
+                        execution_id=execution.id,
+                        workspace_id=execution.workspace_id,
+                        node_id=node_id,
+                        node_name=node_data.get("name"),
+                        agent_type=node_type,
+                        status=WorkflowStepStatus.RUNNING,
+                        input_reference=node_config,
+                        attempt_number=current_attempt,
+                        started_at=utc_now(),
+                        created_at=utc_now(),
+                    )
+                    db.add(step)
+                    steps_by_node[node_id] = step
+
                 await db.flush()
-                steps_by_node[node_id] = step
 
                 # Emit STEP_STARTED
                 db.add(
@@ -478,142 +580,180 @@ class FlowForgeExecutionEngine:
                         execution_id=execution.id,
                         workspace_id=execution.workspace_id,
                         event_type=WorkflowEventType.STEP_STARTED,
-                        payload_json={"node_id": node_id, "node_type": node_type},
+                        payload_json={
+                            "node_id": node_id,
+                            "node_type": node_type,
+                            "attempt_number": current_attempt,
+                        },
                         created_at=utc_now(),
                     )
                 )
                 await db.flush()
 
-                # Node execution handling by type
-                try:
-                    if node_type == WorkflowNodeType.TRIGGER:
-                        step.status = WorkflowStepStatus.COMPLETED
-                        step.completed_at = utc_now()
-                        step.output_reference = {"triggered_at": str(utc_now())}
+                # Node execution handling with bounded retry capability
+                success = False
+                while current_attempt <= (retry_limit + 1) and not success:
+                    try:
+                        if node_type == WorkflowNodeType.TRIGGER:
+                            step.status = WorkflowStepStatus.COMPLETED
+                            step.completed_at = utc_now()
+                            step.output_reference = {"triggered_at": str(utc_now())}
 
-                    elif node_type == WorkflowNodeType.END:
-                        step.status = WorkflowStepStatus.COMPLETED
-                        step.completed_at = utc_now()
-                        step.output_reference = {"completed": True}
+                        elif node_type == WorkflowNodeType.END:
+                            step.status = WorkflowStepStatus.COMPLETED
+                            step.completed_at = utc_now()
+                            step.output_reference = {"completed": True}
 
-                    elif node_type == WorkflowNodeType.NOTIFICATION:
-                        step.status = WorkflowStepStatus.COMPLETED
-                        step.completed_at = utc_now()
-                        step.output_reference = {
-                            "delivered": True,
-                            "message": node_config.get("message", "Workflow notification sent"),
-                        }
+                        elif node_type == WorkflowNodeType.NOTIFICATION:
+                            step.status = WorkflowStepStatus.COMPLETED
+                            step.completed_at = utc_now()
+                            step.output_reference = {
+                                "delivered": True,
+                                "message": node_config.get("message", "Workflow notification sent"),
+                            }
 
-                    elif node_type == WorkflowNodeType.PARALLEL:
-                        # Branch fan-out node
-                        step.status = WorkflowStepStatus.COMPLETED
-                        step.completed_at = utc_now()
-                        step.output_reference = {"parallel_fan_out": True}
+                        elif node_type == WorkflowNodeType.PARALLEL:
+                            # Branch fan-out node
+                            step.status = WorkflowStepStatus.COMPLETED
+                            step.completed_at = utc_now()
+                            step.output_reference = {"parallel_fan_out": True}
 
-                    elif node_type == WorkflowNodeType.MERGE:
-                        # Join synchronization node
-                        step.status = WorkflowStepStatus.COMPLETED
-                        step.completed_at = utc_now()
-                        step.output_reference = {"synchronized": True}
+                        elif node_type == WorkflowNodeType.MERGE:
+                            # Join synchronization node
+                            step.status = WorkflowStepStatus.COMPLETED
+                            step.completed_at = utc_now()
+                            step.output_reference = {"synchronized": True}
 
-                    elif node_type == WorkflowNodeType.CONDITION:
-                        # Evaluate condition
-                        field_name = node_config.get("field")
-                        operator = node_config.get("operator", "==")
-                        target_val = node_config.get("value")
+                        elif node_type == WorkflowNodeType.CONDITION:
+                            # Evaluate condition
+                            field_name = node_config.get("field")
+                            operator = node_config.get("operator", "==")
+                            target_val = node_config.get("value")
 
-                        field_val = context.get(field_name) if field_name else None
-                        cond_result = self._evaluate_condition(field_val, operator, target_val)
+                            field_val = context.get(field_name) if field_name else None
+                            cond_result = self._evaluate_condition(field_val, operator, target_val)
 
-                        step.status = WorkflowStepStatus.COMPLETED
-                        step.completed_at = utc_now()
-                        step.output_reference = {
-                            "condition_met": cond_result,
-                            "branch": "true" if cond_result else "false",
-                            "evaluated_field": field_name,
-                        }
+                            step.status = WorkflowStepStatus.COMPLETED
+                            step.completed_at = utc_now()
+                            step.output_reference = {
+                                "condition_met": cond_result,
+                                "branch": "true" if cond_result else "false",
+                                "evaluated_field": field_name,
+                            }
 
-                    elif node_type == WorkflowNodeType.APPROVAL:
-                        # Human checkpoint: pause execution and create approval
-                        step.status = WorkflowStepStatus.WAITING_FOR_APPROVAL
+                        elif node_type == WorkflowNodeType.APPROVAL:
+                            # Human checkpoint: pause execution and create approval
+                            step.status = WorkflowStepStatus.WAITING_FOR_APPROVAL
+                            await db.flush()
+
+                            user_id_str = context.get("user_id")
+                            user_id = uuid.UUID(str(user_id_str)) if user_id_str else None
+
+                            await self.approval_service.create_approval_request(
+                                db=db,
+                                execution_id=execution.id,
+                                step_execution_id=step.id,
+                                workspace_id=execution.workspace_id,
+                                requested_by=user_id,
+                                reason=node_config.get("reason", "Workflow approval checkpoint"),
+                            )
+
+                            execution.status = WorkflowExecutionStatus.WAITING_FOR_APPROVAL
+                            await db.flush()
+                            return  # Stop execution loop until human decides
+
+                        elif node_type in {
+                            WorkflowNodeType.DEVPILOT,
+                            WorkflowNodeType.IMPACTMIND,
+                            WorkflowNodeType.TESTPILOT,
+                            WorkflowNodeType.SECUREFLOW,
+                        }:
+                            # Delegate to agent adapter
+                            output_ref = await self.agent_adapter.execute_agent_step(
+                                db=db,
+                                agent_type=node_type,
+                                workspace_id=execution.workspace_id,
+                                node_id=node_id,
+                                config=node_config,
+                                context_data=context,
+                            )
+                            step.status = WorkflowStepStatus.COMPLETED
+                            step.completed_at = utc_now()
+                            step.output_reference = output_ref
+
+                            # Merge output reference into context for downstream nodes
+                            context[f"node_{node_id}"] = output_ref
+
+                        else:
+                            raise WorkflowExecutionError(f"Unsupported node type: {node_type}")
+
+                        # Step completed event
+                        db.add(
+                            WorkflowEvent(
+                                execution_id=execution.id,
+                                workspace_id=execution.workspace_id,
+                                event_type=WorkflowEventType.STEP_COMPLETED,
+                                payload_json={
+                                    "node_id": node_id,
+                                    "status": step.status,
+                                    "attempt_number": current_attempt,
+                                },
+                                created_at=utc_now(),
+                            )
+                        )
+                        await db.flush()
+                        success = True
+
+                    except Exception as step_exc:
+                        logger.exception(f"Step '{node_id}' failed on attempt {current_attempt}: {step_exc}")
+                        step.error_summary = str(step_exc)
+
+                        db.add(
+                            WorkflowEvent(
+                                execution_id=execution.id,
+                                workspace_id=execution.workspace_id,
+                                event_type=WorkflowEventType.STEP_FAILED,
+                                payload_json={
+                                    "node_id": node_id,
+                                    "error": str(step_exc),
+                                    "attempt_number": current_attempt,
+                                },
+                                created_at=utc_now(),
+                            )
+                        )
                         await db.flush()
 
-                        user_id_str = context.get("user_id")
-                        user_id = uuid.UUID(str(user_id_str)) if user_id_str else None
+                        # Check if retry limit allows another attempt
+                        if current_attempt <= retry_limit:
+                            current_attempt += 1
+                            step.attempt_number = current_attempt
+                            step.status = WorkflowStepStatus.RUNNING
+                            step.started_at = utc_now()
+                            await db.flush()
+                        else:
+                            # Retries exhausted
+                            step.status = WorkflowStepStatus.FAILED
+                            step.completed_at = utc_now()
 
-                        await self.approval_service.create_approval_request(
-                            db=db,
-                            execution_id=execution.id,
-                            step_execution_id=step.id,
-                            workspace_id=execution.workspace_id,
-                            requested_by=user_id,
-                            reason=node_config.get("reason", "Workflow approval checkpoint"),
-                        )
-
-                        execution.status = WorkflowExecutionStatus.WAITING_FOR_APPROVAL
-                        await db.flush()
-                        return  # Stop execution loop until human decides
-
-                    elif node_type in {
-                        WorkflowNodeType.DEVPILOT,
-                        WorkflowNodeType.IMPACTMIND,
-                        WorkflowNodeType.TESTPILOT,
-                        WorkflowNodeType.SECUREFLOW,
-                    }:
-                        # Delegate to agent adapter
-                        output_ref = await self.agent_adapter.execute_agent_step(
-                            db=db,
-                            agent_type=node_type,
-                            workspace_id=execution.workspace_id,
-                            node_id=node_id,
-                            config=node_config,
-                            context_data=context,
-                        )
-                        step.status = WorkflowStepStatus.COMPLETED
-                        step.completed_at = utc_now()
-                        step.output_reference = output_ref
-
-                        # Merge output reference into context for downstream nodes
-                        context[f"node_{node_id}"] = output_ref
-
-                    else:
-                        raise WorkflowExecutionError(f"Unsupported node type: {node_type}")
-
-                    # Step completed event
-                    db.add(
-                        WorkflowEvent(
-                            execution_id=execution.id,
-                            workspace_id=execution.workspace_id,
-                            event_type=WorkflowEventType.STEP_COMPLETED,
-                            payload_json={"node_id": node_id, "status": step.status},
-                            created_at=utc_now(),
-                        )
-                    )
-                    await db.flush()
-
-                except Exception as step_exc:
-                    logger.exception(f"Step '{node_id}' failed: {step_exc}")
-                    step.status = WorkflowStepStatus.FAILED
-                    step.completed_at = utc_now()
-                    step.error_summary = str(step_exc)
-
-                    db.add(
-                        WorkflowEvent(
-                            execution_id=execution.id,
-                            workspace_id=execution.workspace_id,
-                            event_type=WorkflowEventType.STEP_FAILED,
-                            payload_json={"node_id": node_id, "error": str(step_exc)},
-                            created_at=utc_now(),
-                        )
-                    )
-                    await db.flush()
-
-                    # Halt execution on node failure
-                    execution.status = WorkflowExecutionStatus.FAILED
-                    execution.completed_at = utc_now()
-                    execution.error_summary = f"Step '{node_id}' failed: {step_exc}"
-                    await db.flush()
-                    return
+                            # Halt execution on node failure
+                            execution.status = WorkflowExecutionStatus.FAILED
+                            execution.completed_at = utc_now()
+                            execution.error_summary = f"Step '{node_id}' failed after {current_attempt} attempts: {step_exc}"
+                            db.add(
+                                WorkflowEvent(
+                                    execution_id=execution.id,
+                                    workspace_id=execution.workspace_id,
+                                    event_type=WorkflowEventType.EXECUTION_FAILED,
+                                    payload_json={
+                                        "failed_node_id": node_id,
+                                        "attempts": current_attempt,
+                                        "error": str(step_exc),
+                                    },
+                                    created_at=utc_now(),
+                                )
+                            )
+                            await db.flush()
+                            return
 
     def _evaluate_condition(self, actual: Any, operator: str, target: Any) -> bool:
         """Deterministic evaluation of conditional branching rules without arbitrary code execution."""

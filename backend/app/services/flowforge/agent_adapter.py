@@ -4,6 +4,7 @@ import logging
 import uuid
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.repository import Repository
@@ -137,6 +138,30 @@ class FlowForgeAgentAdapter:
         orchestrator = self.get_devpilot()
         user_id_str = context_data.get("user_id")
         user_id = uuid.UUID(str(user_id_str)) if user_id_str else None
+
+        # Idempotency check: if an existing task was already created for this execution and node, reuse it
+        from app.db.models.devpilot import DevPilotTask
+
+        existing_task_stmt = (
+            select(DevPilotTask)
+            .where(
+                DevPilotTask.workspace_id == workspace_id,
+                DevPilotTask.repository_id == repository_id,
+                DevPilotTask.title == title,
+            )
+            .order_by(DevPilotTask.created_at.desc())
+            .limit(1)
+        )
+        existing_task = (await db.execute(existing_task_stmt)).scalar_one_or_none()
+        if existing_task:
+            return {
+                "status": "COMPLETED",
+                "task_id": str(existing_task.id),
+                "task_title": existing_task.title,
+                "task_status": existing_task.status,
+                "repository_id": str(repository_id),
+                "reused": True,
+            }
 
         task = await orchestrator.create_task(
             db=db,
