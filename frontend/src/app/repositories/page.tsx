@@ -44,7 +44,13 @@ function GitHubIcon({ className = "h-4 w-4" }: { className?: string }) {
     </svg>
   );
 }
-import { CurrentUser, fetchCurrentUser } from "@/lib/auth";
+import {
+  CurrentUser,
+  fetchCurrentUser,
+  getStoredActiveWorkspaceId,
+  setStoredActiveWorkspaceId,
+  resolveActiveWorkspace,
+} from "@/lib/auth";
 import {
   AccessibleGitHubRepo,
   GitHubStatus,
@@ -99,14 +105,9 @@ export default function RepositoriesPage() {
   const [isIntelModalOpen, setIsIntelModalOpen] = React.useState(false);
   const [indexingLoadingId, setIndexingLoadingId] = React.useState<string | null>(null);
 
-  // Active workspace (derived from selectedWorkspaceId or first workspace)
+  // Active workspace (derived consistently from selectedWorkspaceId or stored preference)
   const activeWorkspace = React.useMemo(() => {
-    if (!currentUser?.workspaces || currentUser.workspaces.length === 0) return null;
-    if (selectedWorkspaceId) {
-      const found = currentUser.workspaces.find((w) => w.workspace_id === selectedWorkspaceId);
-      if (found) return found;
-    }
-    return currentUser.workspaces[0];
+    return resolveActiveWorkspace(currentUser, selectedWorkspaceId);
   }, [currentUser, selectedWorkspaceId]);
 
   const isWorkspaceAdminOrOwner =
@@ -151,25 +152,42 @@ export default function RepositoriesPage() {
         setCurrentUser(user);
 
         if (user && user.workspaces && user.workspaces.length > 0) {
-          const initialWsId = user.workspaces[0].workspace_id;
-          setSelectedWorkspaceId(initialWsId);
-          const repos = await fetchWorkspaceRepositories(initialWsId);
-          if (isMounted) {
-            setRepositories(repos);
-            // Fetch intelligence overview for each connected repo
-            repos.forEach((r) => {
-              fetchRepositoryIntelligence(r.id, initialWsId).then((intel) => {
-                if (isMounted) {
-                  setIntelligenceMap((prev) => ({ ...prev, [r.id]: intel }));
-                }
+          const resolved = resolveActiveWorkspace(user);
+          const activeWsId = resolved?.workspace_id || user.workspaces[0].workspace_id;
+          setSelectedWorkspaceId(activeWsId);
+          setStoredActiveWorkspaceId(activeWsId);
+
+          try {
+            const repos = await fetchWorkspaceRepositories(activeWsId);
+            if (isMounted) {
+              setRepositories(repos);
+              // Fetch intelligence overview for each connected repo
+              repos.forEach((r) => {
+                fetchRepositoryIntelligence(r.id, activeWsId).then((intel) => {
+                  if (isMounted) {
+                    setIntelligenceMap((prev) => ({ ...prev, [r.id]: intel }));
+                  }
+                });
               });
-            });
+            }
+          } catch {
+            if (isMounted) {
+              setNotification({
+                type: "error",
+                message: "Failed to load workspace repositories.",
+              });
+            }
           }
         }
 
-        const ghStatus = await fetchGitHubStatus();
-        if (!isMounted) return;
-        setGithubStatus(ghStatus);
+        try {
+          const ghStatus = await fetchGitHubStatus();
+          if (isMounted) {
+            setGithubStatus(ghStatus);
+          }
+        } catch {
+          // GitHub status check failed independently
+        }
       } catch {
         if (isMounted) {
           setNotification({
@@ -192,8 +210,9 @@ export default function RepositoriesPage() {
   }, []);
 
   // Handle workspace change from dropdown
-  const handleWorkspaceChange = async (newWorkspaceId: string) => {
+  const handleWorkspaceChange = React.useCallback(async (newWorkspaceId: string) => {
     setSelectedWorkspaceId(newWorkspaceId);
+    setStoredActiveWorkspaceId(newWorkspaceId);
     setLoading(true);
     try {
       const repos = await fetchWorkspaceRepositories(newWorkspaceId);
@@ -212,7 +231,43 @@ export default function RepositoriesPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  // Synchronize workspace changes across tabs / pages
+  React.useEffect(() => {
+    const handleWorkspaceChanged = (e: Event) => {
+      const customEvent = e as CustomEvent<{ workspaceId: string }>;
+      const newWsId = customEvent.detail?.workspaceId || getStoredActiveWorkspaceId();
+      if (newWsId && newWsId !== selectedWorkspaceId && currentUser?.workspaces?.some((w) => w.workspace_id === newWsId)) {
+        handleWorkspaceChange(newWsId);
+      }
+    };
+
+    const handleStorageEvent = (e: StorageEvent) => {
+      if (e.key === "orchestrix_active_workspace_id" && e.newValue && e.newValue !== selectedWorkspaceId) {
+        if (currentUser?.workspaces?.some((w) => w.workspace_id === e.newValue)) {
+          handleWorkspaceChange(e.newValue);
+        }
+      }
+    };
+
+    const handleFocus = () => {
+      const stored = getStoredActiveWorkspaceId();
+      if (stored && stored !== selectedWorkspaceId && currentUser?.workspaces?.some((w) => w.workspace_id === stored)) {
+        handleWorkspaceChange(stored);
+      }
+    };
+
+    window.addEventListener("orchestrix:workspace_changed", handleWorkspaceChanged);
+    window.addEventListener("storage", handleStorageEvent);
+    window.addEventListener("focus", handleFocus);
+
+    return () => {
+      window.removeEventListener("orchestrix:workspace_changed", handleWorkspaceChanged);
+      window.removeEventListener("storage", handleStorageEvent);
+      window.removeEventListener("focus", handleFocus);
+    };
+  }, [selectedWorkspaceId, currentUser, handleWorkspaceChange]);
 
   // Open Connect Repository Drawer / Modal
   const handleOpenConnectModal = async () => {
@@ -272,6 +327,14 @@ export default function RepositoriesPage() {
       const updatedRepos = await fetchWorkspaceRepositories(activeWorkspace.workspace_id);
       setRepositories(updatedRepos);
 
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("orchestrix:repository_connected", {
+            detail: { githubRepoId: repo.id, workspaceId: activeWorkspace.workspace_id },
+          })
+        );
+      }
+
       setNotification({
         type: "success",
         message: `Repository "${repo.full_name}" successfully connected to workspace.`,
@@ -304,6 +367,13 @@ export default function RepositoriesPage() {
             r.id === repo.github_repository_id ? { ...r, is_connected: false } : r
           )
         );
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("orchestrix:repository_disconnected", {
+              detail: { repositoryId: repo.id, workspaceId: activeWorkspace.workspace_id },
+            })
+          );
+        }
         setNotification({
           type: "success",
           message: `Repository "${repo.full_name}" disconnected from workspace.`,
@@ -606,6 +676,8 @@ export default function RepositoriesPage() {
                   {activeWorkspace.role}
                 </Badge>
               </div>
+            ) : !currentUser ? (
+              <span className="text-xs text-slate-500">Authentication required</span>
             ) : (
               <span className="text-xs text-slate-500">No workspace available</span>
             )}

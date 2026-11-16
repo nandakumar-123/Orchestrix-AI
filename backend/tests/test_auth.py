@@ -1,9 +1,12 @@
+import time
 import uuid
 from collections.abc import AsyncGenerator
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qsl, urlsplit
 
+import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -30,6 +33,7 @@ from app.services.auth import (
     hash_secret,
     provision_or_get_google_user,
     validate_session_token,
+    verify_google_id_token,
 )
 
 
@@ -429,6 +433,14 @@ async def test_google_callback_success_and_replay_protection(
         assert CSRF_COOKIE_NAME in response.cookies
         assert response.cookies[SESSION_COOKIE_NAME]
 
+        # Verify that /api/v1/auth/me returns 200 OK after successful login
+        me_resp = await client.get("/api/v1/auth/me")
+        assert me_resp.status_code == 200
+        me_json = me_resp.json()
+        assert me_json["email"] == "sarah.connor@example.com"
+        assert me_json["full_name"] == "Sarah Connor"
+        assert len(me_json["workspaces"]) >= 1
+
         # 2. Replaying the EXACT same callback must fail with replay_detected
         client.cookies.set(OAUTH_TRX_COOKIE_NAME, browser_secret)
         replay_response = await client.get(
@@ -574,3 +586,123 @@ async def test_workspace_membership_authorization(
     )
     assert resp_create_insufficient.status_code == 403
     assert "ADMIN permission" in resp_create_insufficient.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_verify_google_id_token_clock_skew_tolerance() -> None:
+    """Test verify_google_id_token succeeds when token iat is slightly in the future due to clock skew."""
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
+
+    now = int(time.time())
+    # iat is 15 seconds in future (common clock drift)
+    payload = {
+        "sub": "google-user-skew-1",
+        "email": "skew.user@example.com",
+        "email_verified": True,
+        "aud": "test-google-client-id",
+        "iss": "https://accounts.google.com",
+        "iat": now + 15,
+        "exp": now + 3600,
+        "nonce": "test-nonce-123",
+    }
+    token = jwt.encode(payload, private_key, algorithm="RS256")
+
+    mock_signing_key = MagicMock()
+    mock_signing_key.key = public_key
+
+    with (
+        patch("jwt.PyJWKClient.get_signing_key_from_jwt", return_value=mock_signing_key),
+        patch.object(settings, "GOOGLE_CLIENT_ID", "test-google-client-id"),
+    ):
+        # 1. With standard clock skew leeway (default 60s), verification succeeds
+        claims = await verify_google_id_token(token, expected_nonce="test-nonce-123")
+        assert claims["sub"] == "google-user-skew-1"
+        assert claims["email"] == "skew.user@example.com"
+
+        # 2. When leeway is 0, iat in the future must fail with ValueError
+        with pytest.raises(ValueError, match="Invalid Google ID token signature or claims") as exc_info:
+            await verify_google_id_token(token, expected_nonce="test-nonce-123", leeway=0)
+        assert "The token is not yet valid (iat)" in str(exc_info.value.__cause__)
+
+
+@pytest.mark.asyncio
+async def test_verify_google_id_token_strict_security_enforcement() -> None:
+    """Verify that signature, audience, expiration, issuer, nonce, and email_verified remain strictly enforced."""
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
+    mock_signing_key = MagicMock()
+    mock_signing_key.key = public_key
+
+    now = int(time.time())
+
+    with (
+        patch("jwt.PyJWKClient.get_signing_key_from_jwt", return_value=mock_signing_key),
+        patch.object(settings, "GOOGLE_CLIENT_ID", "test-google-client-id"),
+    ):
+        # 1. Excessive clock drift (> 60s in future) is rejected
+        payload_future = {
+            "sub": "user-future",
+            "email": "future@example.com",
+            "email_verified": True,
+            "aud": "test-google-client-id",
+            "iss": "https://accounts.google.com",
+            "iat": now + 120,
+            "exp": now + 3600,
+        }
+        token_future = jwt.encode(payload_future, private_key, algorithm="RS256")
+        with pytest.raises(ValueError, match="Invalid Google ID token signature or claims"):
+            await verify_google_id_token(token_future)
+
+        # 2. Expired token (> 60s in past) is rejected
+        payload_expired = {
+            "sub": "user-expired",
+            "email": "expired@example.com",
+            "email_verified": True,
+            "aud": "test-google-client-id",
+            "iss": "https://accounts.google.com",
+            "iat": now - 3600,
+            "exp": now - 120,
+        }
+        token_expired = jwt.encode(payload_expired, private_key, algorithm="RS256")
+        with pytest.raises(ValueError, match="Invalid Google ID token signature or claims"):
+            await verify_google_id_token(token_expired)
+
+        # 3. Audience mismatch is rejected
+        payload_wrong_aud = {
+            "sub": "user-wrong-aud",
+            "email": "wrongaud@example.com",
+            "email_verified": True,
+            "aud": "unauthorized-client-id",
+            "iss": "https://accounts.google.com",
+            "iat": now,
+            "exp": now + 3600,
+        }
+        token_wrong_aud = jwt.encode(payload_wrong_aud, private_key, algorithm="RS256")
+        with pytest.raises(ValueError, match="Invalid Google ID token signature or claims"):
+            await verify_google_id_token(token_wrong_aud)
+
+        # 4. Nonce mismatch is rejected
+        payload_valid = {
+            "sub": "user-valid",
+            "email": "valid@example.com",
+            "email_verified": True,
+            "aud": "test-google-client-id",
+            "iss": "https://accounts.google.com",
+            "iat": now,
+            "exp": now + 3600,
+            "nonce": "expected-nonce",
+        }
+        token_valid = jwt.encode(payload_valid, private_key, algorithm="RS256")
+        with pytest.raises(ValueError, match="OAuth nonce mismatch"):
+            await verify_google_id_token(token_valid, expected_nonce="different-nonce")
+
+        # 5. Unverified email is rejected
+        payload_unverified = {
+            **payload_valid,
+            "email_verified": False,
+        }
+        token_unverified = jwt.encode(payload_unverified, private_key, algorithm="RS256")
+        with pytest.raises(ValueError, match="Google account email is not verified"):
+            await verify_google_id_token(token_unverified, expected_nonce="expected-nonce")
+

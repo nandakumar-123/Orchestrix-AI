@@ -382,11 +382,14 @@ async def verify_google_id_token(
     id_token: str,
     expected_nonce: str | None = None,
     jwks_url: str = "https://www.googleapis.com/oauth2/v3/certs",
+    leeway: int | None = None,
 ) -> dict[str, Any]:
     """
     Validate Google ID Token against Google JWKS and audience/issuer/nonce.
+    Applies clock skew leeway for iat/nbf/exp verification to prevent drift errors.
     Returns decoded claims dictionary.
     """
+    clock_skew = leeway if leeway is not None else getattr(settings, "OAUTH_CLOCK_SKEW_SECONDS", 60)
     try:
         jwks_client = jwt.PyJWKClient(jwks_url)
         signing_key = jwks_client.get_signing_key_from_jwt(id_token)
@@ -396,6 +399,7 @@ async def verify_google_id_token(
             algorithms=["RS256"],
             audience=settings.GOOGLE_CLIENT_ID,
             issuer=["https://accounts.google.com", "accounts.google.com"],
+            leeway=clock_skew,
         )
     except Exception as exc:
         security_logger.warning("security_event=id_token_verification_failed error=%s", str(exc))

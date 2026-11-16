@@ -17,6 +17,42 @@ export interface CurrentUser {
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+export const ACTIVE_WORKSPACE_STORAGE_KEY = "orchestrix_active_workspace_id";
+
+export function getStoredActiveWorkspaceId(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return localStorage.getItem(ACTIVE_WORKSPACE_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredActiveWorkspaceId(workspaceId: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(ACTIVE_WORKSPACE_STORAGE_KEY, workspaceId);
+    window.dispatchEvent(
+      new CustomEvent("orchestrix:workspace_changed", { detail: { workspaceId } })
+    );
+  } catch {
+    // ignore
+  }
+}
+
+export function resolveActiveWorkspace(
+  user: CurrentUser | null,
+  preferredWorkspaceId?: string | null
+): WorkspaceMembership | null {
+  if (!user || !user.workspaces || user.workspaces.length === 0) return null;
+  const targetId = preferredWorkspaceId || getStoredActiveWorkspaceId();
+  if (targetId) {
+    const found = user.workspaces.find((w) => w.workspace_id === targetId);
+    if (found) return found;
+  }
+  return user.workspaces[0];
+}
+
 export function getGoogleLoginUrl(): string {
   return `${API_BASE_URL}/auth/google/login`;
 }

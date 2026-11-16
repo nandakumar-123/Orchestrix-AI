@@ -186,4 +186,31 @@ describe("Orchestrix AI Real Dashboard Experience", () => {
       expect(screen.getAllByText("Connected Repositories").length).toBeGreaterThan(0);
     });
   });
+
+  it("renders active workspace banner and synchronizes across workspaces", async () => {
+    const multiUser: authApi.CurrentUser = {
+      ...MOCK_USER,
+      workspaces: [
+        { workspace_id: "ws-test-123", name: "Orchestrix Core", slug: "core", role: "ADMIN" },
+        { workspace_id: "ws-test-456", name: "Secondary Lab", slug: "lab", role: "MEMBER" },
+      ],
+    };
+    vi.spyOn(authApi, "fetchCurrentUser").mockResolvedValue(multiUser);
+
+    render(<DashboardPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId("dashboard-workspace-selector")).toBeInTheDocument();
+      expect(screen.getByText(/Connected Repositories:/i)).toBeInTheDocument();
+    });
+  });
+
+  it("displays login required message when user is not authenticated", async () => {
+    vi.spyOn(authApi, "fetchCurrentUser").mockResolvedValue(null);
+
+    render(<DashboardPage />);
+    await waitFor(() => {
+      expect(screen.getByText("Sign in to view Engineering Overview")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Go to Login/i })).toBeInTheDocument();
+    });
+  });
 });

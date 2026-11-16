@@ -14,18 +14,32 @@ import {
   getDashboardOverview,
   DashboardOverviewResponse,
 } from "@/lib/dashboard";
-import { fetchCurrentUser, CurrentUser } from "@/lib/auth";
+import {
+  fetchCurrentUser,
+  CurrentUser,
+  getStoredActiveWorkspaceId,
+  setStoredActiveWorkspaceId,
+  resolveActiveWorkspace,
+} from "@/lib/auth";
 import { Button } from "@/components/ui/button";
-import { RotateCw, Plus, Sparkles, AlertCircle } from "lucide-react";
+import { RotateCw, Plus, Sparkles, AlertCircle, Building2 } from "lucide-react";
 import Link from "next/link";
 
 export default function DashboardPage() {
   const [currentUser, setCurrentUser] = React.useState<CurrentUser | null>(null);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = React.useState<string | null>(null);
   const [data, setData] = React.useState<DashboardOverviewResponse | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = React.useState(false);
   const [refreshIndex, setRefreshIndex] = React.useState(0);
+
+  // Active workspace derived consistently
+  const activeWorkspace = React.useMemo(() => {
+    return resolveActiveWorkspace(currentUser, selectedWorkspaceId);
+  }, [currentUser, selectedWorkspaceId]);
+
+  const activeWorkspaceId = activeWorkspace?.workspace_id ?? null;
 
   // 1. Initial user load
   React.useEffect(() => {
@@ -34,7 +48,13 @@ export default function DashboardPage() {
       const user = await fetchCurrentUser();
       if (!ignore) {
         setCurrentUser(user);
-        if (!user || !user.workspaces || user.workspaces.length === 0) {
+        if (user && user.workspaces && user.workspaces.length > 0) {
+          const resolved = resolveActiveWorkspace(user);
+          if (resolved) {
+            setSelectedWorkspaceId(resolved.workspace_id);
+            setStoredActiveWorkspaceId(resolved.workspace_id);
+          }
+        } else {
           setLoading(false);
         }
       }
@@ -45,9 +65,49 @@ export default function DashboardPage() {
     };
   }, []);
 
-  const activeWorkspaceId = currentUser?.workspaces?.[0]?.workspace_id ?? null;
+  // 2. Synchronize workspace & repo mutation events across views and tabs
+  React.useEffect(() => {
+    const handleWorkspaceChanged = (e: Event) => {
+      const customEvent = e as CustomEvent<{ workspaceId: string }>;
+      const newWsId = customEvent.detail?.workspaceId || getStoredActiveWorkspaceId();
+      if (newWsId && newWsId !== selectedWorkspaceId) {
+        setSelectedWorkspaceId(newWsId);
+      }
+    };
 
-  // 2. Load dashboard data for workspace
+    const handleStorageEvent = (e: StorageEvent) => {
+      if (e.key === "orchestrix_active_workspace_id" && e.newValue && e.newValue !== selectedWorkspaceId) {
+        setSelectedWorkspaceId(e.newValue);
+      }
+    };
+
+    const handleRepoMutation = () => {
+      setRefreshIndex((prev) => prev + 1);
+    };
+
+    const handleFocus = () => {
+      const stored = getStoredActiveWorkspaceId();
+      if (stored && stored !== selectedWorkspaceId) {
+        setSelectedWorkspaceId(stored);
+      }
+    };
+
+    window.addEventListener("orchestrix:workspace_changed", handleWorkspaceChanged);
+    window.addEventListener("orchestrix:repository_connected", handleRepoMutation);
+    window.addEventListener("orchestrix:repository_disconnected", handleRepoMutation);
+    window.addEventListener("storage", handleStorageEvent);
+    window.addEventListener("focus", handleFocus);
+
+    return () => {
+      window.removeEventListener("orchestrix:workspace_changed", handleWorkspaceChanged);
+      window.removeEventListener("orchestrix:repository_connected", handleRepoMutation);
+      window.removeEventListener("orchestrix:repository_disconnected", handleRepoMutation);
+      window.removeEventListener("storage", handleStorageEvent);
+      window.removeEventListener("focus", handleFocus);
+    };
+  }, [selectedWorkspaceId]);
+
+  // 3. Load dashboard data for workspace
   React.useEffect(() => {
     if (!activeWorkspaceId) return;
     const wsId = activeWorkspaceId;
@@ -87,6 +147,11 @@ export default function DashboardPage() {
     }
   };
 
+  const handleWorkspaceSelect = (newWsId: string) => {
+    setSelectedWorkspaceId(newWsId);
+    setStoredActiveWorkspaceId(newWsId);
+  };
+
   return (
     <AppShell>
       {/* Header */}
@@ -124,6 +189,57 @@ export default function DashboardPage() {
           </div>
         }
       />
+
+      {/* Workspace Selector & Synchronization Bar */}
+      {currentUser && currentUser.workspaces && currentUser.workspaces.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 bg-white border border-slate-200/80 rounded-lg px-4 py-2.5 mb-6 text-xs text-slate-600 shadow-2xs">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-6 w-6 items-center justify-center rounded-md bg-blue-50 text-blue-600">
+              <Building2 className="h-3.5 w-3.5" />
+            </div>
+            <span className="font-semibold text-slate-400 uppercase tracking-wider text-[10px]">
+              Active Workspace
+            </span>
+            {currentUser.workspaces.length > 1 ? (
+              <select
+                data-testid="dashboard-workspace-selector"
+                value={selectedWorkspaceId || ""}
+                onChange={(e) => handleWorkspaceSelect(e.target.value)}
+                className="font-medium text-slate-900 bg-slate-50 border border-slate-300 rounded-md px-2.5 py-1 text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500 cursor-pointer"
+              >
+                {currentUser.workspaces.map((ws) => (
+                  <option key={ws.workspace_id} value={ws.workspace_id}>
+                    {ws.name} ({ws.role})
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span className="font-semibold text-slate-900 text-xs">
+                {activeWorkspace?.name}
+              </span>
+            )}
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-slate-100 text-slate-700">
+              {activeWorkspace?.role}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-3 text-slate-500">
+            <span>
+              Connected Repositories:{" "}
+              <strong className="text-slate-900">
+                {data?.metrics?.connected_repositories ?? 0}
+              </strong>
+            </span>
+            <span className="text-slate-300">|</span>
+            <Link
+              href="/repositories"
+              className="text-blue-600 hover:text-blue-700 font-medium hover:underline inline-flex items-center gap-1"
+            >
+              Manage Repositories &rarr;
+            </Link>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="rounded-lg border border-rose-200 bg-rose-50/70 p-4 text-xs text-rose-800 flex items-center justify-between">
@@ -236,9 +352,34 @@ export default function DashboardPage() {
             <RepositoryOverview repositories={data.repositories} />
           </section>
         </div>
+      ) : !currentUser ? (
+        <div className="rounded-lg border border-slate-200 bg-white p-12 text-center space-y-4">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+            <AlertCircle className="h-6 w-6" />
+          </div>
+          <div className="space-y-1">
+            <h3 className="text-base font-semibold text-slate-900">Sign in to view Engineering Overview</h3>
+            <p className="text-xs text-slate-500 max-w-sm mx-auto">
+              Authenticate with your enterprise identity to inspect repositories, active agent mesh, and system tasks.
+            </p>
+          </div>
+          <div className="pt-2">
+            <Link href="/auth/login">
+              <Button size="sm">Go to Login</Button>
+            </Link>
+          </div>
+        </div>
       ) : (
-        <div className="rounded-lg border border-slate-200 bg-white p-8 text-center">
-          <p className="text-sm text-slate-600">No workspace available or user not logged in.</p>
+        <div className="rounded-lg border border-slate-200 bg-white p-12 text-center space-y-3">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-blue-50 text-blue-600">
+            <Building2 className="h-6 w-6" />
+          </div>
+          <div className="space-y-1">
+            <h3 className="text-base font-semibold text-slate-900">No Workspace Available</h3>
+            <p className="text-xs text-slate-500 max-w-sm mx-auto">
+              Your account is not associated with any active workspaces. Contact your administrator or create a workspace.
+            </p>
+          </div>
         </div>
       )}
     </AppShell>

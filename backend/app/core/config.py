@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     FRONTEND_ORIGIN: str = "http://localhost:3000"
     CSRF_COOKIE_NAME: str = "orchestrix_csrf"
     OAUTH_TRX_COOKIE_NAME: str = "orchestrix_oauth_trx"
+    OAUTH_CLOCK_SKEW_SECONDS: int = 60
 
     @field_validator("GOOGLE_REDIRECT_URI", mode="before")
     @classmethod

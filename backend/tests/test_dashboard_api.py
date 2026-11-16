@@ -10,7 +10,8 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.api.deps import get_current_user
-from app.db.base import Base, WorkspaceRole
+from app.db.base import Base, WorkspaceRole, IndexingJobStatus
+from app.db.models.repository_intelligence import IndexingJob
 from app.db.models.devmemory import (
     EngineeringMemory,
     MemoryType,
@@ -480,3 +481,75 @@ async def test_dashboard_overview_unauthenticated(
     # Without dependency override, should return 401
     response = await api_client.get(f"/api/v1/dashboard/overview?workspace_id={ws1.id}")
     assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_dashboard_overview_excludes_deactivated_repositories(
+    api_client: AsyncClient,
+    test_db_session: AsyncSession,
+    setup_dashboard_data: dict[str, Any],
+) -> None:
+    data = setup_dashboard_data
+    ws1 = data["ws1"]
+    repo1 = data["repo1"]
+    repo2 = data["repo2"]
+    u_owner = data["u_owner"]
+
+    app.dependency_overrides[get_current_user] = lambda: u_owner
+
+    # Verify initial state: 2 active repos
+    resp_initial = await api_client.get(f"/api/v1/dashboard/overview?workspace_id={ws1.id}")
+    assert resp_initial.status_code == 200
+    assert resp_initial.json()["metrics"]["connected_repositories"] == 2
+    assert len(resp_initial.json()["repositories"]) == 2
+
+    # Add completed indexing job for repo2
+    idx_job_repo2 = IndexingJob(
+        id=uuid.uuid4(),
+        repository_id=repo2.id,
+        workspace_id=ws1.id,
+        commit_sha="abcdef1234567890",
+        branch="main",
+        status=IndexingJobStatus.COMPLETED,
+    )
+    test_db_session.add(idx_job_repo2)
+
+    # Deactivate repo2 (soft delete via disconnect)
+    repo2.is_active = False
+    await test_db_session.commit()
+
+    # Query overview again
+    resp_after = await api_client.get(f"/api/v1/dashboard/overview?workspace_id={ws1.id}")
+    assert resp_after.status_code == 200
+    res_after = resp_after.json()
+
+    # 1. Connected repositories count must be 1 (repo2 excluded)
+    assert res_after["metrics"]["connected_repositories"] == 1
+
+    # 2. Indexed repositories count must NOT include repo2's completed indexing job
+    assert res_after["metrics"]["indexed_repositories"] == 0
+
+    # 3. Repositories list must only contain active repo1
+    repo_list = res_after["repositories"]
+    assert len(repo_list) == 1
+    assert repo_list[0]["id"] == str(repo1.id)
+    assert repo_list[0]["name"] == "alpha-api"
+
+    # 4. Activities must not include repo2's indexing activities
+    idx_activities = [
+        a for a in res_after["activities"]
+        if a["event_type"] == "repo_index" and a.get("repository_id") == str(repo2.id)
+    ]
+    assert len(idx_activities) == 0
+
+    # 5. Reactivate repo2 (reconnect)
+    repo2.is_active = True
+    await test_db_session.commit()
+
+    resp_reconnect = await api_client.get(f"/api/v1/dashboard/overview?workspace_id={ws1.id}")
+    assert resp_reconnect.status_code == 200
+    res_reconnect = resp_reconnect.json()
+    assert res_reconnect["metrics"]["connected_repositories"] == 2
+    assert res_reconnect["metrics"]["indexed_repositories"] == 1
+    assert len(res_reconnect["repositories"]) == 2
+

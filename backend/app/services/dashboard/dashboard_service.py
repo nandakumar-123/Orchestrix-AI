@@ -49,6 +49,15 @@ from app.services.dashboard.schemas import (
 logger = logging.getLogger("orchestrix.services.dashboard")
 
 
+def _normalize_dt(dt: datetime | None) -> datetime:
+    """Normalize datetime to timezone-aware UTC for robust sorting across drivers."""
+    if dt is None:
+        return datetime.min.replace(tzinfo=UTC)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
+
+
 class DashboardService:
     """Aggregates authentic workspace and repository metrics for dashboard consumption."""
 
@@ -68,9 +77,12 @@ class DashboardService:
         now = datetime.now(UTC)
 
         # ---------------------------------------------------------------------
-        # 1. Repositories
+        # 1. Repositories (Only active repositories)
         # ---------------------------------------------------------------------
-        repo_stmt = select(Repository).where(Repository.workspace_id == workspace_id)
+        repo_stmt = select(Repository).where(
+            Repository.workspace_id == workspace_id,
+            Repository.is_active.is_(True),
+        )
         if repository_id:
             repo_stmt = repo_stmt.where(Repository.id == repository_id)
         repo_result = await session.execute(repo_stmt)
@@ -79,8 +91,10 @@ class DashboardService:
         repo_summaries: list[RepositorySummary] = []
         indexed_repo_count = 0
 
-        # Map repo id -> name for activity/task lookups
-        repo_name_map: dict[uuid.UUID, str] = {r.id: r.name for r in repos}
+        # Map all workspace repos (including historical) to name for task/activity display
+        all_repo_stmt = select(Repository.id, Repository.name).where(Repository.workspace_id == workspace_id)
+        all_repo_res = await session.execute(all_repo_stmt)
+        repo_name_map: dict[uuid.UUID, str] = {row[0]: row[1] for row in all_repo_res.all()}
 
         for r in repos:
             # Latest indexing job for this repository
@@ -310,7 +324,7 @@ class DashboardService:
             )
 
         # Sort combined tasks by updated_at descending and keep top 8
-        task_items.sort(key=lambda item: item.updated_at, reverse=True)
+        task_items.sort(key=lambda item: _normalize_dt(item.updated_at), reverse=True)
         recent_task_slice = task_items[:8]
 
         # ---------------------------------------------------------------------
@@ -521,7 +535,7 @@ class DashboardService:
                 )
 
         # Sort activities descending by created_at and paginate to activity_limit
-        activities.sort(key=lambda a: a.created_at, reverse=True)
+        activities.sort(key=lambda a: _normalize_dt(a.created_at), reverse=True)
         paginated_activities = activities[:activity_limit]
 
         # ---------------------------------------------------------------------
