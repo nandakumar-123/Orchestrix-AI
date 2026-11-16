@@ -6,6 +6,9 @@ from app.db.base import (
     TaskPriority,
     TaskStatus,
     TaskType,
+    TicketActivityType,
+    TicketPriority,
+    TicketStatus,
     WorkspaceRole,
 )
 from app.db.models.audit_log import AuditLog
@@ -100,6 +103,7 @@ from app.db.models.testpilot import (
 from app.db.models.testpilot import (
     TestType as TestPilotTestType,
 )
+from app.db.models.ticket import Ticket, TicketActivity
 from app.db.models.user import User
 from app.db.models.workspace import Workspace
 
@@ -121,6 +125,11 @@ __all__ = [
     "Repository",
     "RepositoryMember",
     "EngineeringTask",
+    "Ticket",
+    "TicketActivity",
+    "TicketPriority",
+    "TicketStatus",
+    "TicketActivityType",
     "PullRequestRecord",
     "AuditLog",
     "AuthSession",

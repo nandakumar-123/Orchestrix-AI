@@ -254,3 +254,55 @@ export async function cancelTestExecution(
   }
   return res.json();
 }
+
+export interface RiskAssessmentSummaryItem {
+  id: string;
+  repository_id: string;
+  repository_name?: string | null;
+  comparison_mode: string;
+  status: string;
+  structural_exposure_score: number;
+  exposure_tier: string;
+  breaking_changes_count: number;
+  impacted_entities_count: number;
+  test_recommendations_count: number;
+  created_at: string;
+  completed_at?: string | null;
+}
+
+export interface ExposedFileSummaryItem {
+  file_path: string;
+  impact_count: number;
+  highest_severity: string;
+}
+
+export interface WorkspaceRiskOverview {
+  workspace_id: string;
+  repository_id?: string | null;
+  total_assessments: number;
+  has_assessment_data: boolean;
+  latest_risk_score?: number | null;
+  latest_risk_tier?: string | null;
+  latest_assessment_at?: string | null;
+  tier_distribution: Record<string, number>;
+  breaking_changes_total: number;
+  recent_assessments: RiskAssessmentSummaryItem[];
+  top_exposed_files: ExposedFileSummaryItem[];
+}
+
+export async function getWorkspaceRiskOverview(
+  workspaceId: string,
+  repositoryId?: string
+): Promise<WorkspaceRiskOverview> {
+  const q = new URLSearchParams({ workspace_id: workspaceId });
+  if (repositoryId) {
+    q.set("repository_id", repositoryId);
+  }
+  const res = await fetchWithAuth(`/api/v1/risk/overview?${q.toString()}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Failed to fetch workspace risk overview (${res.status})`);
+  }
+  return res.json();
+}
+

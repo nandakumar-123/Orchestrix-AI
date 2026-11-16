@@ -16,6 +16,14 @@ USER_ID = "8207f222-0d0b-462a-aeff-06560dc07a0a"
 
 @pytest.mark.asyncio
 async def test_live_backend_full_workflows():
+    # Check if live server is running on localhost:8000
+    try:
+        with urllib.request.urlopen("http://localhost:8000/api/v1/health", timeout=2) as resp:
+            if resp.status != 200:
+                pytest.skip("Local test server is not running on port 8000")
+    except Exception:
+        pytest.skip("Local test server is not running on port 8000")
+
     # 1. Create real authenticated session in Neon DB
     factory = get_async_session_factory()
     async with factory() as session:

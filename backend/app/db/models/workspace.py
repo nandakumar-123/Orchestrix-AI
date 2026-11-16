@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from app.db.models.github_installation import GitHubInstallation
     from app.db.models.membership import WorkspaceMembership
     from app.db.models.repository import Repository
+    from app.db.models.ticket import Ticket
 
 
 class Workspace(Base):
@@ -74,6 +75,12 @@ class Workspace(Base):
         "AuditLog",
         back_populates="workspace",
         cascade="all, delete-orphan",
+    )
+    tickets: Mapped[list["Ticket"]] = relationship(
+        "Ticket",
+        back_populates="workspace",
+        cascade="all, delete-orphan",
+        overlaps="repository,tickets,workspace",
     )
 
     def __repr__(self) -> str:

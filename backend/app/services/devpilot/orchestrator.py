@@ -446,16 +446,17 @@ class DevPilotOrchestrator:
         self,
         db: AsyncSession,
         workspace_id: uuid.UUID,
-        repository_id: uuid.UUID,
+        repository_id: uuid.UUID | None = None,
         limit: int = 50,
     ) -> list[DevPilotTask]:
-        """List tasks for repository in workspace."""
+        """List tasks for repository or entire workspace."""
+        filters = [DevPilotTask.workspace_id == workspace_id]
+        if repository_id is not None:
+            filters.append(DevPilotTask.repository_id == repository_id)
+
         stmt = (
             select(DevPilotTask)
-            .where(
-                DevPilotTask.workspace_id == workspace_id,
-                DevPilotTask.repository_id == repository_id,
-            )
+            .where(*filters)
             .options(
                 selectinload(DevPilotTask.plans),
                 selectinload(DevPilotTask.events),

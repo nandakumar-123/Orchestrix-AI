@@ -839,6 +839,41 @@ class CancelTestsRequest(BaseModel):
     execution_id: uuid.UUID
 
 
+class RiskAssessmentSummaryItem(BaseModel):
+    id: uuid.UUID
+    repository_id: uuid.UUID
+    repository_name: str | None = None
+    comparison_mode: str
+    status: str
+    structural_exposure_score: float
+    exposure_tier: str
+    breaking_changes_count: int
+    impacted_entities_count: int
+    test_recommendations_count: int
+    created_at: datetime
+    completed_at: datetime | None = None
+
+
+class ExposedFileSummaryItem(BaseModel):
+    file_path: str
+    impact_count: int
+    highest_severity: str
+
+
+class WorkspaceRiskOverviewResponse(BaseModel):
+    workspace_id: uuid.UUID
+    repository_id: uuid.UUID | None = None
+    total_assessments: int
+    has_assessment_data: bool
+    latest_risk_score: float | None = None
+    latest_risk_tier: str | None = None
+    latest_assessment_at: datetime | None = None
+    tier_distribution: dict[str, int]
+    breaking_changes_total: int
+    recent_assessments: list[RiskAssessmentSummaryItem]
+    top_exposed_files: list[ExposedFileSummaryItem]
+
+
 # -----------------------------------------------------------------------------
 # DevPilot Autonomous AI Software Engineer Schemas
 # -----------------------------------------------------------------------------

@@ -5,7 +5,9 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.deps import (
     enforce_csrf_protection,
@@ -15,15 +17,19 @@ from app.api.deps import (
 from app.api.v1.schemas import (
     CancelTestsRequest,
     ChangeClassificationItem,
+    ExposedFileSummaryItem,
     ImpactAnalyzeRequest,
     ImpactAssessmentListResponse,
     ImpactAssessmentResponse,
     ImpactedEntityItem,
+    RiskAssessmentSummaryItem,
     RunTestsRequest,
     TestExecutionRunItem,
     TestRecommendationItem,
+    WorkspaceRiskOverviewResponse,
 )
 from app.db.base import WorkspaceRole
+from app.db.models.impactmind import ImpactAssessment
 from app.db.models.membership import WorkspaceMembership
 from app.db.models.repository import Repository
 from app.db.models.user import User
@@ -31,6 +37,7 @@ from app.db.session import get_db_session
 from app.services.impactmind.engine import ImpactMindEngine
 
 impact_router = APIRouter(prefix="/repositories", tags=["impactmind"])
+risk_router = APIRouter(prefix="/risk", tags=["risk"])
 logger = logging.getLogger("orchestrix.api.impactmind")
 
 # Singleton engine instance
@@ -467,3 +474,133 @@ async def cancel_regression_test_execution(
         "status": "cancelled" if cancelled else "not_running",
         "execution_id": str(payload.execution_id),
     }
+
+
+@risk_router.get(
+    "/overview",
+    response_model=WorkspaceRiskOverviewResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get aggregated workspace risk and impact assessment overview",
+)
+async def get_workspace_risk_overview(
+    workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
+    repository_id: uuid.UUID | None = Query(default=None, description="Optional repository filter"),
+    current_user: User = Depends(get_current_user),
+    _membership: WorkspaceMembership = Depends(require_workspace_membership(WorkspaceRole.VIEWER)),
+    db: AsyncSession = Depends(get_db_session),
+) -> WorkspaceRiskOverviewResponse:
+    """
+    Retrieve real ImpactMind risk assessment metrics across active repositories in the workspace.
+    Clearly distinguishes unavailable assessment data from zero risk.
+    """
+    # 1. Fetch active repositories map
+    repo_stmt = select(Repository.id, Repository.name).where(
+        Repository.workspace_id == workspace_id,
+        Repository.is_active.is_(True),
+    )
+    if repository_id:
+        repo_stmt = repo_stmt.where(Repository.id == repository_id)
+    repo_res = await db.execute(repo_stmt)
+    repo_map = {row[0]: row[1] for row in repo_res.all()}
+
+    if not repo_map:
+        return WorkspaceRiskOverviewResponse(
+            workspace_id=workspace_id,
+            repository_id=repository_id,
+            total_assessments=0,
+            has_assessment_data=False,
+            latest_risk_score=None,
+            latest_risk_tier=None,
+            latest_assessment_at=None,
+            tier_distribution={"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0},
+            breaking_changes_total=0,
+            recent_assessments=[],
+            top_exposed_files=[],
+        )
+
+    # 2. Query assessments for active repositories in workspace
+    stmt = (
+        select(ImpactAssessment)
+        .where(
+            ImpactAssessment.workspace_id == workspace_id,
+            ImpactAssessment.repository_id.in_(list(repo_map.keys())),
+        )
+        .options(
+            selectinload(ImpactAssessment.classifications),
+            selectinload(ImpactAssessment.impacted_entities),
+            selectinload(ImpactAssessment.test_recommendations),
+        )
+        .order_by(desc(ImpactAssessment.created_at))
+    )
+    if repository_id:
+        stmt = stmt.where(ImpactAssessment.repository_id == repository_id)
+
+    assessments = list((await db.execute(stmt)).scalars().all())
+
+    total = len(assessments)
+    tier_distribution = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    breaking_total = 0
+    file_impact_counter: dict[str, int] = {}
+    file_tier_map: dict[str, str] = {}
+
+    recent_items: list[RiskAssessmentSummaryItem] = []
+
+    for a in assessments:
+        tier = (a.exposure_tier or "LOW").upper()
+        if tier in tier_distribution:
+            tier_distribution[tier] += 1
+        else:
+            tier_distribution[tier] = 1
+
+        breaking_in_a = sum(1 for c in (a.classifications or []) if c.is_breaking)
+        breaking_total += breaking_in_a
+
+        for c in (a.classifications or []):
+            if c.file_path:
+                file_impact_counter[c.file_path] = file_impact_counter.get(c.file_path, 0) + 1
+                if tier == "CRITICAL" or file_tier_map.get(c.file_path) != "CRITICAL":
+                    file_tier_map[c.file_path] = tier
+
+        if len(recent_items) < 10:
+            recent_items.append(
+                RiskAssessmentSummaryItem(
+                    id=a.id,
+                    repository_id=a.repository_id,
+                    repository_name=repo_map.get(a.repository_id),
+                    comparison_mode=a.comparison_mode,
+                    status=a.status,
+                    structural_exposure_score=a.structural_exposure_score,
+                    exposure_tier=a.exposure_tier,
+                    breaking_changes_count=breaking_in_a,
+                    impacted_entities_count=len(a.impacted_entities or []),
+                    test_recommendations_count=len(a.test_recommendations or []),
+                    created_at=a.created_at,
+                    completed_at=a.completed_at,
+                )
+            )
+
+    top_files = [
+        ExposedFileSummaryItem(
+            file_path=f_path,
+            impact_count=count,
+            highest_severity=file_tier_map.get(f_path, "LOW"),
+        )
+        for f_path, count in sorted(file_impact_counter.items(), key=lambda x: x[1], reverse=True)[:10]
+    ]
+
+    latest = assessments[0] if assessments else None
+
+    return WorkspaceRiskOverviewResponse(
+        workspace_id=workspace_id,
+        repository_id=repository_id,
+        total_assessments=total,
+        has_assessment_data=(latest is not None),
+        latest_risk_score=latest.structural_exposure_score if latest else None,
+        latest_risk_tier=latest.exposure_tier if latest else None,
+        latest_assessment_at=latest.completed_at or latest.created_at if latest else None,
+        tier_distribution=tier_distribution,
+        breaking_changes_total=breaking_total,
+        recent_assessments=recent_items,
+        top_exposed_files=top_files,
+    )
+

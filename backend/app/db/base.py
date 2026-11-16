@@ -90,3 +90,34 @@ class IndexingJobStatus(enum.StrEnum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+
+
+class TicketPriority(enum.StrEnum):
+    """Priority levels for workspace tickets."""
+
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
+
+
+class TicketStatus(enum.StrEnum):
+    """Lifecycle statuses for tickets."""
+
+    OPEN = "OPEN"
+    IN_PROGRESS = "IN_PROGRESS"
+    UNDER_REVIEW = "UNDER_REVIEW"
+    RESOLVED = "RESOLVED"
+    CLOSED = "CLOSED"
+
+
+class TicketActivityType(enum.StrEnum):
+    """Activity action types for ticket audit and history tracking."""
+
+    CREATED = "CREATED"
+    STATUS_CHANGED = "STATUS_CHANGED"
+    ASSIGNED = "ASSIGNED"
+    PRIORITY_CHANGED = "PRIORITY_CHANGED"
+    COMMENTED = "COMMENTED"
+    UPDATED = "UPDATED"
+

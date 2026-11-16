@@ -614,3 +614,11 @@ async def test_devpilot_workspace_resolution_and_authorization(
     res_forbidden = await api_client.get(f"/api/v1/repositories/{repo_id}/devpilot/tasks")
     assert res_forbidden.status_code == 403
     assert "Access denied" in res_forbidden.json()["detail"]
+
+    # Case 6: Workspace-level tasks endpoint
+    app.dependency_overrides[get_current_user] = lambda: member_user
+    res_ws_tasks = await api_client.get(f"/api/v1/devpilot/tasks?workspace_id={ws_id}")
+    assert res_ws_tasks.status_code == 200
+    assert res_ws_tasks.json()["total"] == 0
+    assert res_ws_tasks.json()["tasks"] == []
+

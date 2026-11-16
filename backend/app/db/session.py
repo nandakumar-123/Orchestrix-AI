@@ -10,6 +10,9 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.core.config import settings
+from app.core.dns_fallback import enable_dns_fallback
+
+enable_dns_fallback()
 
 logger = logging.getLogger("orchestrix.db")
 

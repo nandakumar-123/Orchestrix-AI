@@ -342,6 +342,33 @@ export async function listDevPilotTasks(
   };
 }
 
+export async function listWorkspaceDevPilotTasks(
+  workspaceId: string,
+  params?: {
+    repository_id?: string;
+    limit?: number;
+  }
+): Promise<DevPilotTaskListResponse> {
+  const query = buildQuery({
+    workspace_id: workspaceId,
+    repository_id: params?.repository_id,
+    limit: params?.limit || 50,
+  });
+
+  const res = await fetchWithAuth(`/api/v1/devpilot/tasks${query}`);
+  if (!res.ok) {
+    const err = await getResponseErrorMessage(res, `Failed to load workspace tasks (${res.status})`);
+    throw new Error(err);
+  }
+  const raw = (await res.json()) as { tasks?: Array<Record<string, unknown>>; total?: number };
+  const rawTasks = Array.isArray(raw.tasks) ? raw.tasks : [];
+  return {
+    tasks: rawTasks.map(mapRawTaskDetail),
+    total: typeof raw.total === "number" ? raw.total : rawTasks.length,
+  };
+}
+
+
 export async function getDevPilotTask(
   repositoryId: string,
   taskId: string,

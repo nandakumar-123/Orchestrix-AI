@@ -564,3 +564,37 @@ async def cancel_engineering_task(
     except Exception as e:
         logger.exception(f"Error cancelling task: {e}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
+
+workspace_devpilot_router = APIRouter(prefix="/devpilot", tags=["devpilot"])
+
+
+@workspace_devpilot_router.get(
+    "/tasks",
+    response_model=DevPilotTaskListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List engineering tasks across the workspace",
+)
+async def list_workspace_engineering_tasks(
+    workspace_id: uuid.UUID = Query(..., description="Workspace tenant identifier"),
+    repository_id: uuid.UUID | None = Query(default=None, description="Optional repository filter"),
+    limit: int = Query(default=50, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+    orchestrator: DevPilotOrchestrator = Depends(get_devpilot_orchestrator),
+) -> DevPilotTaskListResponse:
+    """Retrieve engineering tasks across all connected repositories in the workspace."""
+    await verify_workspace_membership(
+        db=db,
+        user_id=current_user.id,
+        workspace_id=workspace_id,
+        min_role=WorkspaceRole.VIEWER,
+    )
+    tasks = await orchestrator.list_tasks(
+        db=db, workspace_id=workspace_id, repository_id=repository_id, limit=limit
+    )
+    return DevPilotTaskListResponse(
+        tasks=[_format_task_response(t) for t in tasks],
+        total=len(tasks),
+    )
+

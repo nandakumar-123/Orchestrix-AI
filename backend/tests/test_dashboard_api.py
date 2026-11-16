@@ -10,8 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.api.deps import get_current_user
-from app.db.base import Base, WorkspaceRole, IndexingJobStatus
-from app.db.models.repository_intelligence import IndexingJob
+from app.db.base import Base, IndexingJobStatus, WorkspaceRole
 from app.db.models.devmemory import (
     EngineeringMemory,
     MemoryType,
@@ -31,6 +30,7 @@ from app.db.models.github_installation import GitHubInstallation
 from app.db.models.impactmind import ImpactAssessment
 from app.db.models.membership import WorkspaceMembership
 from app.db.models.repository import Repository
+from app.db.models.repository_intelligence import IndexingJob
 from app.db.models.secureflow import (
     FindingSeverity,
     FindingStatus,
