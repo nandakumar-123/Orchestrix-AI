@@ -2,9 +2,25 @@ import * as React from "react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Cpu, Bot, Play, RotateCw, GitFork, ArrowRight } from "lucide-react";
+import { WorkflowSummary, SecuritySummary, ImpactSummary, MemorySummary } from "@/lib/dashboard";
+import { Cpu, Bot, GitFork, ArrowRight, Workflow } from "lucide-react";
+import Link from "next/link";
 
-export function OrchestrationControl() {
+interface OrchestrationControlProps {
+  workflows: WorkflowSummary;
+  security: SecuritySummary;
+  impact: ImpactSummary;
+  memory: MemorySummary;
+  totalRunningTasks: number;
+}
+
+export function OrchestrationControl({
+  workflows,
+  security,
+  impact,
+  memory,
+  totalRunningTasks,
+}: OrchestrationControlProps) {
   return (
     <Card className="border-slate-200/90 bg-white">
       <CardHeader className="pb-3">
@@ -27,14 +43,18 @@ export function OrchestrationControl() {
           </div>
 
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" className="text-xs h-8">
-              <RotateCw className="h-3.5 w-3.5 mr-1 text-slate-500" />
-              Sync Graph
-            </Button>
-            <Button size="sm" className="text-xs h-8">
-              <Play className="h-3.5 w-3.5 mr-1" />
-              Trigger Cycle
-            </Button>
+            <Link href="/workflows">
+              <Button variant="outline" size="sm" className="text-xs h-8">
+                <Workflow className="h-3.5 w-3.5 mr-1 text-slate-500" />
+                Workflows ({workflows.total_workflows})
+              </Button>
+            </Link>
+            <Link href="/workflows/new">
+              <Button size="sm" className="text-xs h-8">
+                <Bot className="h-3.5 w-3.5 mr-1" />
+                Builder
+              </Button>
+            </Link>
           </div>
         </div>
       </CardHeader>
@@ -43,21 +63,35 @@ export function OrchestrationControl() {
         {/* State Overview */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3 rounded-lg bg-slate-50 border border-slate-200/60 text-xs">
           <div>
-            <span className="text-slate-400 block text-[11px]">Mesh State</span>
-            <span className="font-semibold text-slate-800">Autonomous Active</span>
+            <span className="text-slate-400 block text-[11px]">Workflow Mesh</span>
+            <span className="font-semibold text-slate-800">
+              {workflows.active_workflows} Active / {workflows.total_workflows} Total
+            </span>
           </div>
           <div>
             <span className="text-slate-400 block text-[11px]">Active Tasks</span>
-            <span className="font-semibold text-blue-600">12 Concurrent</span>
+            <span className="font-semibold text-blue-600">
+              {totalRunningTasks} Running
+            </span>
           </div>
           <div>
-            <span className="text-slate-400 block text-[11px]">Specialist Agents</span>
-            <span className="font-semibold text-slate-800">6 / 6 Assigned</span>
+            <span className="text-slate-400 block text-[11px]">Engineering Memory</span>
+            <span className="font-semibold text-slate-800">
+              {memory.verified_count} / {memory.total_count} Verified
+            </span>
           </div>
           <div>
-            <span className="text-slate-400 block text-[11px]">Cycle Frequency</span>
-            <span className="font-semibold text-slate-800">Continuous Event-Driven</span>
+            <span className="text-slate-400 block text-[11px]">Security Posture</span>
+            <span className={`font-semibold ${security.open_findings > 0 ? "text-amber-600" : "text-emerald-600"}`}>
+              {security.open_findings > 0 ? `${security.open_findings} Findings` : "Clean"}
+            </span>
           </div>
+        </div>
+
+        {/* Impact Sub-bar */}
+        <div className="flex items-center justify-between text-xs text-slate-500 px-3 py-1.5 rounded bg-slate-50 border border-slate-200/50">
+          <span>Latest Impact Analysis Tier: <strong className="font-mono text-slate-700">{impact.latest_risk_tier || "N/A"}</strong></span>
+          <span>{impact.total_assessments} Total Assessments</span>
         </div>
 
         {/* Visual Relationship Diagram between Orchestrator & Specialist Agents */}
@@ -67,31 +101,32 @@ export function OrchestrationControl() {
               <GitFork className="h-3.5 w-3.5 text-blue-600" />
               Agent Coordination Topology
             </span>
-            <span className="text-[11px]">LangGraph State Machine</span>
+            <span className="text-[11px]">LangGraph State Coordinator</span>
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs pt-1">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-blue-50 border border-blue-200 text-blue-900 font-medium">
               <Bot className="h-4 w-4 text-blue-600" />
-              <span>Central Coordinator</span>
+              <span>Coordinator</span>
             </div>
             <ArrowRight className="h-3.5 w-3.5 text-slate-400 hidden sm:block" />
             
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2 w-full sm:w-auto flex-1">
               {[
-                "DevPilot",
-                "ImpactMind",
-                "TestPilot",
-                "SecureFlow",
-                "FlowForge",
-                "DevMemory",
+                { name: "DevPilot", href: "/devpilot" },
+                { name: "ImpactMind", href: "/impact" },
+                { name: "TestPilot", href: "/testing" },
+                { name: "SecureFlow", href: "/security" },
+                { name: "FlowForge", href: "/workflows" },
+                { name: "DevMemory", href: "/memory" },
               ].map((agent) => (
-                <div
-                  key={agent}
-                  className="flex items-center justify-center px-2 py-1.5 rounded bg-slate-50 border border-slate-200 text-slate-700 font-mono text-[11px] text-center"
+                <Link
+                  key={agent.name}
+                  href={agent.href}
+                  className="flex items-center justify-center px-2 py-1.5 rounded bg-slate-50 border border-slate-200 text-slate-700 hover:border-blue-300 hover:text-blue-600 transition-colors font-mono text-[11px] text-center"
                 >
-                  {agent}
-                </div>
+                  {agent.name}
+                </Link>
               ))}
             </div>
           </div>
@@ -100,4 +135,3 @@ export function OrchestrationControl() {
     </Card>
   );
 }
-

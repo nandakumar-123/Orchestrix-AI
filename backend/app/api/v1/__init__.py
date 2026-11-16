@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.v1.auth import auth_router
+from app.api.v1.dashboard import dashboard_router
 from app.api.v1.devmemory import devmemory_router
 from app.api.v1.devpilot import devpilot_router
 from app.api.v1.endpoints import router as health_router
@@ -26,3 +27,4 @@ api_router.include_router(testpilot_router)
 api_router.include_router(secureflow_router)
 api_router.include_router(flowforge_router)
 api_router.include_router(devmemory_router)
+api_router.include_router(dashboard_router)
